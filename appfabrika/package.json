@@ -1,0 +1,42 @@
+{
+  "name": "appfabrika",
+  "version": "0.1.0",
+  "description": "BMAD metodolojisi ile urun gelistirme CLI araci",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "appfabrika": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "bmad",
+    "cli",
+    "automation",
+    "llm"
+  ],
+  "author": "calio",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.72.1",
+    "@clack/prompts": "^1.0.0",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "openai": "^6.17.0",
+    "ora": "^9.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.1.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
