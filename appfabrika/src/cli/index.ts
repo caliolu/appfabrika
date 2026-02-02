@@ -7,6 +7,7 @@
 
 import { Command } from 'commander';
 import { initCommand } from './commands/init.js';
+import { runCommand } from './commands/run.js';
 
 const program = new Command();
 
@@ -19,5 +20,7 @@ program
   .command('init')
   .description('Yeni bir BMAD projesi başlat')
   .action(initCommand);
+
+program.addCommand(runCommand);
 
 program.parse();
