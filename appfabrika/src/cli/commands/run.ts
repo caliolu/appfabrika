@@ -41,7 +41,115 @@ const RUN_MESSAGES = {
   SKIPPING: 'Atlanıyor...',
   NO_API_KEY: 'Anthropic API anahtarı bulunamadı.',
   API_KEY_HELP: 'API anahtarınızı kaydetmek için:\n  echo "ANTHROPIC_API_KEY=sk-..." >> ~/.appfabrika/.env',
+  STEP_CONFIG_INTRO: '📋 Adım Yapılandırması',
+  STEP_CONFIG_DESC: 'Her adım için çalışma modunu seçin:',
+  ALL_AUTO: '🤖 Tümünü Otomatik',
+  ALL_MANUAL: '✋ Tümünü Manuel',
+  CUSTOM: '⚙️ Özelleştir',
 } as const;
+
+/**
+ * Step execution mode
+ */
+type StepMode = 'auto' | 'manual' | 'skip';
+
+/**
+ * Collect step preferences from user at the beginning
+ */
+async function collectStepPreferences(
+  startStepIndex: number
+): Promise<Map<BmadStepType, StepMode> | null> {
+  const preferences = new Map<BmadStepType, StepMode>();
+
+  console.log('');
+  p.log.info(RUN_MESSAGES.STEP_CONFIG_INTRO);
+  p.log.message(RUN_MESSAGES.STEP_CONFIG_DESC);
+  console.log('');
+
+  // First ask for bulk selection
+  const bulkChoice = await p.select({
+    message: 'Nasıl ilerlemek istersiniz?',
+    options: [
+      { value: 'all-auto', label: '🤖 Tüm adımları otomatik çalıştır' },
+      { value: 'all-manual', label: '✋ Tüm adımları manuel tamamlayacağım' },
+      { value: 'custom', label: '⚙️ Her adımı ayrı ayrı ayarla' },
+    ],
+  });
+
+  if (p.isCancel(bulkChoice)) {
+    return null;
+  }
+
+  // Apply bulk choice
+  if (bulkChoice === 'all-auto') {
+    for (let i = startStepIndex; i < BMAD_STEPS.length; i++) {
+      preferences.set(BMAD_STEPS[i], 'auto');
+    }
+    return preferences;
+  }
+
+  if (bulkChoice === 'all-manual') {
+    for (let i = startStepIndex; i < BMAD_STEPS.length; i++) {
+      preferences.set(BMAD_STEPS[i], 'manual');
+    }
+    return preferences;
+  }
+
+  // Custom: ask for each step
+  console.log('');
+  p.log.info('Her adım için mod seçin:');
+  console.log('');
+
+  for (let i = startStepIndex; i < BMAD_STEPS.length; i++) {
+    const stepId = BMAD_STEPS[i];
+    const stepName = BMAD_STEP_NAMES[stepId];
+    const emoji = BMAD_STEP_EMOJIS[stepId];
+
+    const choice = await p.select({
+      message: `${emoji} ${i + 1}. ${stepName}`,
+      options: [
+        { value: 'auto', label: '🤖 Otomatik' },
+        { value: 'manual', label: '✋ Manuel' },
+        { value: 'skip', label: '⏭️ Atla' },
+      ],
+    });
+
+    if (p.isCancel(choice)) {
+      return null;
+    }
+
+    preferences.set(stepId, choice as StepMode);
+  }
+
+  // Show summary
+  console.log('');
+  p.log.info('📊 Yapılandırma Özeti:');
+
+  let autoCount = 0;
+  let manualCount = 0;
+  let skipCount = 0;
+
+  for (const mode of preferences.values()) {
+    if (mode === 'auto') autoCount++;
+    else if (mode === 'manual') manualCount++;
+    else if (mode === 'skip') skipCount++;
+  }
+
+  p.log.message(`   🤖 Otomatik: ${autoCount} adım`);
+  p.log.message(`   ✋ Manuel: ${manualCount} adım`);
+  p.log.message(`   ⏭️ Atlanan: ${skipCount} adım`);
+  console.log('');
+
+  const confirm = await p.confirm({
+    message: 'Bu yapılandırma ile devam edilsin mi?',
+  });
+
+  if (p.isCancel(confirm) || !confirm) {
+    return null;
+  }
+
+  return preferences;
+}
 
 /**
  * BMAD step prompts for LLM
@@ -444,72 +552,62 @@ export const runCommand = new Command('run')
     const errorDisplay = getErrorDisplay();
     const completionScreen = getCompletionScreen();
 
-    const isCheckpointMode = config.automationTemplate === 'checkpoint';
     const completedSteps: BmadStepType[] = [];
     const startTime = Date.now();
+
+    // Collect step preferences upfront (unless --auto flag is used)
+    let stepPreferences: Map<BmadStepType, StepMode> | null = null;
+
+    if (!options.auto) {
+      stepPreferences = await collectStepPreferences(startStepIndex);
+
+      if (!stepPreferences) {
+        p.cancel('İptal edildi.');
+        process.exit(0);
+      }
+    } else {
+      // --auto flag: set all to auto
+      stepPreferences = new Map();
+      for (let i = startStepIndex; i < BMAD_STEPS.length; i++) {
+        stepPreferences.set(BMAD_STEPS[i], 'auto');
+      }
+    }
+
+    console.log('');
+    p.log.info('🚀 Workflow başlıyor...');
 
     // Execute workflow steps
     for (let i = startStepIndex; i < BMAD_STEPS.length; i++) {
       const stepId = BMAD_STEPS[i];
       const stepName = BMAD_STEP_NAMES[stepId];
       const emoji = BMAD_STEP_EMOJIS[stepId];
+      const stepMode = stepPreferences.get(stepId) || 'auto';
 
       // Show current step
       console.log('');
       console.log(terminalUI.formatStepDisplay(stepId, { showNumber: true, showDescription: true }));
 
-      // In checkpoint mode, ask for confirmation
-      if (isCheckpointMode && !options.auto) {
-        const action = await p.select({
-          message: `${emoji} ${stepName} - Ne yapmak istersiniz?`,
-          options: [
-            { value: 'auto', label: '🤖 Otomatik çalıştır' },
-            { value: 'manual', label: '✋ Manuel tamamlayacağım' },
-            { value: 'skip', label: '⏭️ Atla' },
-            { value: 'quit', label: '🚪 Çıkış' },
-          ],
-        });
-
-        if (p.isCancel(action) || action === 'quit') {
-          // Save checkpoint before exit
-          const checkpointService = new CheckpointService({ projectPath });
-          await checkpointService.onErrorSaveCheckpoint(
-            {
-              projectPath,
-              projectIdea: config.idea,
-              llmProvider: config.llmProvider,
-              automationTemplate: config.automationTemplate,
-            },
-            stepId,
-            new Map(),
-            new Map(),
-            new Error('User cancelled'),
-            0
-          );
-          p.cancel('Workflow duraklatıldı. `appfabrika run` ile devam edebilirsiniz.');
-          process.exit(0);
-        }
-
-        if (action === 'skip') {
-          p.log.warn(`${emoji} ${stepName} atlandı`);
-          continue;
-        }
-
-        if (action === 'manual') {
-          p.log.info(RUN_MESSAGES.MANUAL_STEP);
-          await p.text({
-            message: RUN_MESSAGES.PRESS_ENTER,
-            placeholder: 'Enter\'a basın...',
-          });
-
-          await saveStepCheckpoint(projectPath, stepId, 'Manuel olarak tamamlandı');
-          completedSteps.push(stepId);
-          p.log.success(`${emoji} ${stepName} ${RUN_MESSAGES.STEP_COMPLETE}`);
-          continue;
-        }
+      // Handle skip mode
+      if (stepMode === 'skip') {
+        p.log.warn(`${emoji} ${stepName} atlandı`);
+        continue;
       }
 
-      // Execute step automatically
+      // Handle manual mode
+      if (stepMode === 'manual') {
+        p.log.info(RUN_MESSAGES.MANUAL_STEP);
+        await p.text({
+          message: RUN_MESSAGES.PRESS_ENTER,
+          placeholder: 'Enter\'a basın...',
+        });
+
+        await saveStepCheckpoint(projectPath, stepId, 'Manuel olarak tamamlandı');
+        completedSteps.push(stepId);
+        p.log.success(`${emoji} ${stepName} ${RUN_MESSAGES.STEP_COMPLETE}`);
+        continue;
+      }
+
+      // Execute step automatically (auto mode)
       spinner.startStep(stepId);
 
       try {
