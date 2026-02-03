@@ -40,7 +40,7 @@ describe('AnthropicAdapter', () => {
       expect(() => new AnthropicAdapter({ apiKey: '' })).toThrow(LLMError);
     });
 
-    it('should use claude-3-5-sonnet-latest as default model', () => {
+    it('should use claude-sonnet-4-20250514 as default model', () => {
       const adapter = new AnthropicAdapter({ apiKey: 'sk-ant-test-key' });
       expect(adapter.provider).toBe('anthropic');
     });
@@ -66,7 +66,7 @@ describe('AnthropicAdapter', () => {
 
       expect(response.content).toBe('Hello, world!');
       expect(response.provider).toBe('anthropic');
-      expect(response.model).toBe('claude-3-5-sonnet-latest');
+      expect(response.model).toBe('claude-sonnet-4-20250514');
       expect(response.usage).toEqual({
         promptTokens: 10,
         completionTokens: 5,

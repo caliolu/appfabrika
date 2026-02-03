@@ -165,7 +165,7 @@ And regular text`;
       const llmResponse: LLMResponse = {
         content: '# Response\n\nThis is a test response with enough content to be valid.',
         provider: 'anthropic',
-        model: 'claude-3-5-sonnet-latest',
+        model: 'claude-sonnet-4-20250514',
         usage: {
           promptTokens: 10,
           completionTokens: 20,
@@ -179,7 +179,7 @@ And regular text`;
       );
 
       expect(result.metadata.provider).toBe('anthropic');
-      expect(result.metadata.model).toBe('claude-3-5-sonnet-latest');
+      expect(result.metadata.model).toBe('claude-sonnet-4-20250514');
     });
   });
 
