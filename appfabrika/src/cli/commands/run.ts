@@ -402,7 +402,7 @@ async function getPreviousStepContext(
 }
 
 /**
- * Execute a BMAD step using real Anthropic API
+ * Execute a BMAD step using real Anthropic API with streaming output
  */
 async function executeStep(
   stepId: BmadStepType,
@@ -410,7 +410,8 @@ async function executeStep(
   spinner: SpinnerService,
   adapter: AnthropicAdapter,
   projectPath: string,
-  stepIndex: number
+  stepIndex: number,
+  useStreaming: boolean = true
 ): Promise<{ success: boolean; output: string }> {
   const stepName = BMAD_STEP_NAMES[stepId];
   const emoji = BMAD_STEP_EMOJIS[stepId];
@@ -425,19 +426,51 @@ async function executeStep(
     const promptFn = BMAD_STEP_PROMPTS[stepId];
     const prompt = promptFn(config.idea, context || undefined);
 
-    spinner.updateText(`${emoji} ${stepName} - Claude ile iletişim kuruluyor...`);
+    const systemPrompt = 'Sen bir deneyimli yazılım ürün geliştirme uzmanısın. BMAD (Build, Measure, Analyze, Decide) metodolojisini kullanarak proje geliştirme sürecinde yardımcı oluyorsun. Yanıtlarını Türkçe ver ve yapılandırılmış, anlaşılır format kullan.';
 
-    // Call Anthropic API with longer timeout
-    const response = await adapter.complete(prompt, {
-      maxTokens: 4096,
-      timeout: 120000, // 2 minutes timeout for complex prompts
-      systemPrompt: 'Sen bir deneyimli yazılım ürün geliştirme uzmanısın. BMAD (Build, Measure, Analyze, Decide) metodolojisini kullanarak proje geliştirme sürecinde yardımcı oluyorsun. Yanıtlarını Türkçe ver ve yapılandırılmış, anlaşılır format kullan.',
-    });
+    if (useStreaming) {
+      // Stop spinner and show streaming header
+      spinner.stop();
+      console.log('');
+      console.log(`${emoji} ${stepName} - Claude yanıtlıyor...`);
+      console.log('─'.repeat(50));
+      console.log('');
 
-    return {
-      success: true,
-      output: response.content,
-    };
+      // Stream the response
+      let fullContent = '';
+      const stream = adapter.stream(prompt, {
+        maxTokens: 4096,
+        systemPrompt,
+      });
+
+      for await (const chunk of stream) {
+        process.stdout.write(chunk);
+        fullContent += chunk;
+      }
+
+      console.log('');
+      console.log('');
+      console.log('─'.repeat(50));
+
+      return {
+        success: true,
+        output: fullContent,
+      };
+    } else {
+      // Non-streaming mode (fallback)
+      spinner.updateText(`${emoji} ${stepName} - Claude ile iletişim kuruluyor...`);
+
+      const response = await adapter.complete(prompt, {
+        maxTokens: 4096,
+        timeout: 120000,
+        systemPrompt,
+      });
+
+      return {
+        success: true,
+        output: response.content,
+      };
+    }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     return {
@@ -478,7 +511,9 @@ export const runCommand = new Command('run')
   .description('BMAD workflow\'unu çalıştır')
   .option('-s, --step <step>', 'Belirli bir adımdan başla (1-12)')
   .option('-a, --auto', 'Tüm adımları otomatik çalıştır')
+  .option('--no-stream', 'Streaming çıktıyı devre dışı bırak')
   .action(async (options) => {
+    const useStreaming = options.stream !== false;
     const projectPath = process.cwd();
 
     // Check if this is an AppFabrika project
@@ -611,14 +646,20 @@ export const runCommand = new Command('run')
       spinner.startStep(stepId);
 
       try {
-        const result = await executeStep(stepId, config, spinner, adapter, projectPath, i);
+        const result = await executeStep(stepId, config, spinner, adapter, projectPath, i, useStreaming);
 
         if (result.success) {
           await saveStepCheckpoint(projectPath, stepId, result.output);
           completedSteps.push(stepId);
-          spinner.succeedStep(`${emoji} ${stepName} ${RUN_MESSAGES.STEP_COMPLETE}`);
+          if (useStreaming) {
+            p.log.success(`${emoji} ${stepName} ${RUN_MESSAGES.STEP_COMPLETE}`);
+          } else {
+            spinner.succeedStep(`${emoji} ${stepName} ${RUN_MESSAGES.STEP_COMPLETE}`);
+          }
         } else {
-          spinner.failStep(`${emoji} ${stepName} ${RUN_MESSAGES.STEP_FAILED}`);
+          if (!useStreaming) {
+            spinner.failStep(`${emoji} ${stepName} ${RUN_MESSAGES.STEP_FAILED}`);
+          }
 
           // Show error and options
           console.log('');
