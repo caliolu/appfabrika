@@ -30,7 +30,7 @@ export class AnthropicAdapter extends BaseLLMAdapter {
   }
 
   protected getDefaultModel(): string {
-    return 'claude-3-5-sonnet-latest';
+    return 'claude-sonnet-4-20250514';
   }
 
   /**

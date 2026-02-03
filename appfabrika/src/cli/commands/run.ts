@@ -14,8 +14,9 @@ import { ErrorDisplay, getErrorDisplay, ErrorAction } from '../ui/error-display.
 import { CompletionScreen, getCompletionScreen } from '../ui/completion-screen.js';
 import { ResumeService } from '../../services/resume-service.js';
 import { CheckpointService } from '../../services/checkpoint-service.js';
-import { BMAD_STEPS, BMAD_STEP_NAMES, BMAD_STEP_EMOJIS } from '../../types/bmad.types.js';
-import type { BmadStepType } from '../../types/bmad.types.js';
+import { BMAD_STEPS, BMAD_STEP_NAMES, BMAD_STEP_EMOJIS, BmadStepType } from '../../types/bmad.types.js';
+import { AnthropicAdapter } from '../../adapters/llm/anthropic.adapter.js';
+import { getSecretManager } from '../../core/secrets.js';
 import type { ProjectConfig } from '../../types/project.types.js';
 
 /**
@@ -38,7 +39,209 @@ const RUN_MESSAGES = {
   MANUAL_STEP: 'Bu adım manuel tamamlanmalı.',
   PRESS_ENTER: 'Tamamladıktan sonra Enter\'a basın...',
   SKIPPING: 'Atlanıyor...',
+  NO_API_KEY: 'Anthropic API anahtarı bulunamadı.',
+  API_KEY_HELP: 'API anahtarınızı kaydetmek için:\n  echo "ANTHROPIC_API_KEY=sk-..." >> ~/.appfabrika/.env',
 } as const;
+
+/**
+ * BMAD step prompts for LLM
+ */
+const BMAD_STEP_PROMPTS: Record<BmadStepType, (idea: string, context?: string) => string> = {
+  [BmadStepType.BRAINSTORMING]: (idea) => `Sen bir ürün geliştirme uzmanısın. Aşağıdaki ürün fikri için beyin fırtınası yap:
+
+**Fikir:** ${idea}
+
+Lütfen şunları analiz et:
+1. Fikrin güçlü yönleri
+2. Potansiyel zorluklar
+3. Hedef kitle analizi
+4. Benzersiz değer önerisi
+5. İlk adımlar için öneriler
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.RESEARCH]: (idea, context) => `Sen bir pazar araştırması uzmanısın. Aşağıdaki ürün fikri için araştırma yap:
+
+**Fikir:** ${idea}
+
+**Önceki Analiz:**
+${context || 'Yok'}
+
+Lütfen şunları araştır:
+1. Pazar büyüklüğü ve potansiyeli
+2. Rakip analizi
+3. Teknoloji trendleri
+4. Kullanıcı ihtiyaçları
+5. Giriş engelleri
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.PRODUCT_BRIEF]: (idea, context) => `Sen bir ürün yöneticisisin. Aşağıdaki ürün fikri için özet doküman oluştur:
+
+**Fikir:** ${idea}
+
+**Araştırma Sonuçları:**
+${context || 'Yok'}
+
+Lütfen şunları içeren bir ürün özeti oluştur:
+1. Vizyon ve misyon
+2. Problem tanımı
+3. Çözüm önerisi
+4. Hedef kitle
+5. Başarı kriterleri
+6. Kapsam ve sınırlar
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.PRD]: (idea, context) => `Sen bir ürün gereksinimler analisti sin. Detaylı PRD (Product Requirements Document) oluştur:
+
+**Fikir:** ${idea}
+
+**Ürün Özeti:**
+${context || 'Yok'}
+
+Lütfen şunları içeren bir PRD oluştur:
+1. Fonksiyonel gereksinimler
+2. Fonksiyonel olmayan gereksinimler
+3. Kullanıcı senaryoları
+4. Kabul kriterleri
+5. Öncelikler (MoSCoW)
+6. Teknik kısıtlamalar
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.UX_DESIGN]: (idea, context) => `Sen bir UX tasarımcısısın. Kullanıcı deneyimi tasarımı yap:
+
+**Fikir:** ${idea}
+
+**Gereksinimler:**
+${context || 'Yok'}
+
+Lütfen şunları tasarla:
+1. Kullanıcı akışları
+2. Ekran düzeni önerileri
+3. Navigasyon yapısı
+4. Etkileşim kalıpları
+5. Erişilebilirlik notları
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.ARCHITECTURE]: (idea, context) => `Sen bir yazılım mimarısın. Sistem mimarisi tasarla:
+
+**Fikir:** ${idea}
+
+**Gereksinimler ve UX:**
+${context || 'Yok'}
+
+Lütfen şunları tasarla:
+1. Sistem bileşenleri
+2. Veri akışı
+3. Teknoloji seçimleri
+4. API tasarımı
+5. Güvenlik mimarisi
+6. Ölçeklenebilirlik planı
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.EPICS_STORIES]: (idea, context) => `Sen bir agile koçusun. Epic ve kullanıcı hikayeleri oluştur:
+
+**Fikir:** ${idea}
+
+**Mimari:**
+${context || 'Yok'}
+
+Lütfen şunları oluştur:
+1. Ana Epic'ler
+2. Her Epic için kullanıcı hikayeleri
+3. Kabul kriterleri
+4. Story point tahminleri
+5. Bağımlılıklar
+
+Format: As a [user], I want [goal], so that [benefit]
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.SPRINT_PLANNING]: (idea, context) => `Sen bir Scrum Master'sın. Sprint planlaması yap:
+
+**Fikir:** ${idea}
+
+**Epic ve Hikayeler:**
+${context || 'Yok'}
+
+Lütfen şunları planla:
+1. Sprint 1 kapsamı
+2. Sprint hedefleri
+3. Görev dağılımı
+4. Risk değerlendirmesi
+5. Definition of Done
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.TECH_SPEC]: (idea, context) => `Sen bir teknik lidersin. Teknik şartname hazırla:
+
+**Fikir:** ${idea}
+
+**Mimari ve Sprint Planı:**
+${context || 'Yok'}
+
+Lütfen şunları belirle:
+1. Detaylı teknik tasarım
+2. Veritabanı şeması
+3. API endpoint'leri
+4. Entegrasyon noktaları
+5. Test stratejisi
+6. Deployment planı
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.DEVELOPMENT]: (idea, context) => `Sen bir kıdemli yazılım geliştiricisin. Geliştirme rehberi oluştur:
+
+**Fikir:** ${idea}
+
+**Teknik Şartname:**
+${context || 'Yok'}
+
+Lütfen şunları sağla:
+1. Kod yapısı önerisi
+2. Başlangıç kodu snippets
+3. Best practice'ler
+4. Kod standartları
+5. Debugging ipuçları
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.CODE_REVIEW]: (idea, context) => `Sen bir kod inceleme uzmanısın. Kod inceleme kontrol listesi oluştur:
+
+**Fikir:** ${idea}
+
+**Geliştirme Notları:**
+${context || 'Yok'}
+
+Lütfen şunları kontrol et:
+1. Kod kalitesi kriterleri
+2. Güvenlik kontrolleri
+3. Performans kontrolleri
+4. Test coverage
+5. Dokümantasyon
+
+Türkçe yanıt ver.`,
+
+  [BmadStepType.QA_TESTING]: (idea, context) => `Sen bir QA mühendisisin. Test planı oluştur:
+
+**Fikir:** ${idea}
+
+**Geliştirme ve İnceleme:**
+${context || 'Yok'}
+
+Lütfen şunları planla:
+1. Test senaryoları
+2. Test türleri (unit, integration, e2e)
+3. Test verileri
+4. Kabul testleri
+5. Regresyon planı
+
+Türkçe yanıt ver.`,
+};
 
 /**
  * Check if current directory is an AppFabrika project
@@ -58,28 +261,82 @@ async function loadProjectConfig(projectPath: string): Promise<ProjectConfig> {
 }
 
 /**
- * Simulate step execution (placeholder for real LLM integration)
+ * Get previous step outputs for context
+ */
+async function getPreviousStepContext(
+  projectPath: string,
+  currentStepIndex: number
+): Promise<string> {
+  const { readFile: fsReadFile } = await import('node:fs/promises');
+  const checkpointsDir = join(projectPath, '.appfabrika', 'checkpoints');
+
+  // Get last 2 completed steps for context
+  const contextSteps = BMAD_STEPS.slice(Math.max(0, currentStepIndex - 2), currentStepIndex);
+  const contexts: string[] = [];
+
+  for (const stepId of contextSteps) {
+    try {
+      const checkpointPath = join(checkpointsDir, `${stepId}.json`);
+      const content = await fsReadFile(checkpointPath, 'utf-8');
+      const checkpoint = JSON.parse(content);
+      if (checkpoint.output?.content) {
+        const stepName = BMAD_STEP_NAMES[stepId];
+        // Truncate to avoid token limits
+        const truncated = checkpoint.output.content.slice(0, 2000);
+        contexts.push(`### ${stepName}\n${truncated}`);
+      }
+    } catch {
+      // Skip if checkpoint doesn't exist
+    }
+  }
+
+  return contexts.join('\n\n');
+}
+
+/**
+ * Execute a BMAD step using real Anthropic API
  */
 async function executeStep(
   stepId: BmadStepType,
   config: ProjectConfig,
-  spinner: SpinnerService
+  spinner: SpinnerService,
+  adapter: AnthropicAdapter,
+  projectPath: string,
+  stepIndex: number
 ): Promise<{ success: boolean; output: string }> {
   const stepName = BMAD_STEP_NAMES[stepId];
   const emoji = BMAD_STEP_EMOJIS[stepId];
 
   spinner.updateText(`${emoji} ${stepName} çalışıyor...`);
 
-  // Simulate LLM processing time (2-5 seconds)
-  const delay = 2000 + Math.random() * 3000;
-  await new Promise(resolve => setTimeout(resolve, delay));
+  try {
+    // Get context from previous steps
+    const context = await getPreviousStepContext(projectPath, stepIndex);
 
-  // For now, return simulated success
-  // In real implementation, this would call the LLM adapter
-  return {
-    success: true,
-    output: `${stepName} adımı tamamlandı.\n\nProje: ${config.idea}\n\nBu bir simülasyon çıktısıdır. Gerçek implementasyonda LLM API çağrılacak.`,
-  };
+    // Get the prompt for this step
+    const promptFn = BMAD_STEP_PROMPTS[stepId];
+    const prompt = promptFn(config.idea, context || undefined);
+
+    spinner.updateText(`${emoji} ${stepName} - Claude ile iletişim kuruluyor...`);
+
+    // Call Anthropic API with longer timeout
+    const response = await adapter.complete(prompt, {
+      maxTokens: 4096,
+      timeout: 120000, // 2 minutes timeout for complex prompts
+      systemPrompt: 'Sen bir deneyimli yazılım ürün geliştirme uzmanısın. BMAD (Build, Measure, Analyze, Decide) metodolojisini kullanarak proje geliştirme sürecinde yardımcı oluyorsun. Yanıtlarını Türkçe ver ve yapılandırılmış, anlaşılır format kullan.',
+    });
+
+    return {
+      success: true,
+      output: response.content,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return {
+      success: false,
+      output: `Hata: ${errorMessage}`,
+    };
+  }
 }
 
 /**
@@ -128,6 +385,21 @@ export const runCommand = new Command('run')
     // Load project config
     const config = await loadProjectConfig(projectPath);
     p.log.success(`${RUN_MESSAGES.CONFIG_LOADED}: ${config.projectName}`);
+
+    // Load API key and create adapter
+    const secretManager = getSecretManager();
+    const apiKey = await secretManager.getApiKey('anthropic');
+
+    if (!apiKey) {
+      p.log.error(RUN_MESSAGES.NO_API_KEY);
+      p.log.info(RUN_MESSAGES.API_KEY_HELP);
+      process.exit(1);
+    }
+
+    const adapter = new AnthropicAdapter({
+      apiKey,
+      model: 'claude-sonnet-4-20250514',
+    });
 
     // Check for resumable checkpoint
     const resumeService = new ResumeService({ projectPath });
@@ -184,12 +456,7 @@ export const runCommand = new Command('run')
 
       // Show current step
       console.log('');
-      console.log(terminalUI.formatStepDisplay({
-        stepId,
-        stepNumber: i + 1,
-        totalSteps: BMAD_STEPS.length,
-        status: 'in-progress',
-      }));
+      console.log(terminalUI.formatStepDisplay(stepId, { showNumber: true, showDescription: true }));
 
       // In checkpoint mode, ask for confirmation
       if (isCheckpointMode && !options.auto) {
@@ -246,7 +513,7 @@ export const runCommand = new Command('run')
       spinner.startStep(stepId);
 
       try {
-        const result = await executeStep(stepId, config, spinner);
+        const result = await executeStep(stepId, config, spinner, adapter, projectPath, i);
 
         if (result.success) {
           await saveStepCheckpoint(projectPath, stepId, result.output);
@@ -257,10 +524,11 @@ export const runCommand = new Command('run')
 
           // Show error and options
           console.log('');
-          console.log(errorDisplay.render(new Error('Adım başarısız oldu'), {
+          console.log(errorDisplay.render(new Error(result.output || 'Adım başarısız oldu'), {
             retryAttempts: 1,
             maxRetries: 3,
           }));
+          p.log.error(`Hata detayı: ${result.output}`);
 
           const errorAction = await p.select({
             message: 'Ne yapmak istersiniz?',
