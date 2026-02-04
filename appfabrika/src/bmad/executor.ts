@@ -263,67 +263,21 @@ export async function executeStep(
   let iterations = 0;
   let approved = false;
 
-  // If multiple techniques found, ask user how to proceed
+  // If multiple techniques found, run ALL of them automatically
   if (techniques.length >= 2) {
     console.log('');
-    console.log(`🎯 ${techniques.length} teknik tespit edildi:`);
+    console.log(`🎯 ${techniques.length} teknik tespit edildi - HEPSİ çalıştırılacak:`);
     techniques.forEach((t, i) => console.log(`   ${i + 1}. ${t}`));
     console.log('');
 
-    const runChoice = await p.select({
-      message: 'Bu tekniklerle ne yapmak istersin?',
-      options: [
-        { value: 'all', label: '🚀 Hepsini çalıştır ve sentezle (önerilen)' },
-        { value: 'select', label: '🎯 Bazılarını seç' },
-        { value: 'one', label: '1️⃣ Sadece birini seç' },
-        { value: 'skip', label: '⏭️ Bu adımı atla' },
-      ],
-    });
-
-    if (p.isCancel(runChoice)) {
-      return { success: false, output: '', userApproved: false, iterations };
-    }
-
-    if (runChoice === 'skip') {
-      return { success: true, output: 'Atlandı', userApproved: false, nextStep: step.meta.nextStepFile, iterations };
-    }
-
-    let selectedTechniques = techniques;
-
-    if (runChoice === 'select') {
-      // Multi-select
-      const selected = await p.multiselect({
-        message: 'Hangi teknikleri çalıştırmak istersin?',
-        options: techniques.map((t, i) => ({ value: i.toString(), label: `${i + 1}. ${t}` })),
-      });
-
-      if (p.isCancel(selected)) {
-        return { success: false, output: '', userApproved: false, iterations };
-      }
-
-      selectedTechniques = (selected as string[]).map(i => techniques[parseInt(i)]);
-    } else if (runChoice === 'one') {
-      // Single select
-      const selected = await p.select({
-        message: 'Hangi tekniği çalıştırmak istersin?',
-        options: techniques.map((t, i) => ({ value: i.toString(), label: `${i + 1}. ${t}` })),
-      });
-
-      if (p.isCancel(selected)) {
-        return { success: false, output: '', userApproved: false, iterations };
-      }
-
-      selectedTechniques = [techniques[parseInt(selected as string)]];
-    }
-
-    // Run selected techniques
+    // Run ALL techniques automatically
     const outputs: string[] = [];
 
-    for (let i = 0; i < selectedTechniques.length; i++) {
+    for (let i = 0; i < techniques.length; i++) {
       const output = await runTechnique(
-        selectedTechniques[i],
+        techniques[i],
         i,
-        selectedTechniques.length,
+        techniques.length,
         context,
         adapter,
         true
@@ -332,23 +286,19 @@ export async function executeStep(
       iterations++;
     }
 
-    // Synthesize if multiple
-    if (selectedTechniques.length > 1) {
-      const synthesis = await synthesizeTechniques(
-        selectedTechniques,
-        outputs,
-        context,
-        adapter,
-        true
-      );
-      iterations++;
+    // Synthesize all outputs
+    const synthesis = await synthesizeTechniques(
+      techniques,
+      outputs,
+      context,
+      adapter,
+      true
+    );
+    iterations++;
 
-      accumulatedContent = selectedTechniques.map((t, i) =>
-        `## ${t}\n\n${outputs[i]}`
-      ).join('\n\n---\n\n') + '\n\n---\n\n# SENTEZ\n\n' + synthesis;
-    } else {
-      accumulatedContent = `## ${selectedTechniques[0]}\n\n${outputs[0]}`;
-    }
+    accumulatedContent = techniques.map((t, i) =>
+      `## ${t}\n\n${outputs[i]}`
+    ).join('\n\n---\n\n') + '\n\n---\n\n# SENTEZ\n\n' + synthesis;
   } else {
     // No multiple techniques, run standard sections
     const nonMenuSections = step.sections.filter(s => !s.isMenu);
