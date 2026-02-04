@@ -1,6 +1,7 @@
 /**
  * BMAD Step Executor
  * Executes workflow steps interactively with AI + user interaction
+ * Now with A/P/C/Y menu system, Advanced Elicitation (50+ methods), and YOLO mode
  */
 
 import * as p from '@clack/prompts';
@@ -14,6 +15,17 @@ import type {
   AgentPersona,
 } from './types.js';
 import { BMAD_AGENTS, getAgentsForPhase } from './types.js';
+import {
+  showStepMenu,
+  runAdvancedElicitation,
+  createYoloState,
+  enableYoloMode,
+  shouldAutoContinue,
+  type YoloState,
+} from './template-engine.js';
+
+// Global YOLO state for the current workflow
+let currentYoloState: YoloState = createYoloState();
 
 /**
  * Stream AI response to console with clear formatting
@@ -119,121 +131,83 @@ Türkçe konuş.`;
 }
 
 /**
- * Handle A/P/C menu
+ * Handle A/P/C/Y menu - Now with full Advanced Elicitation and YOLO mode
  */
 async function handleMenu(
   menuOptions: MenuOption[],
   currentContent: string,
+  stepName: string,
   context: ExecutionContext,
   adapter: AnthropicAdapter
 ): Promise<{ action: string; content: string; continue: boolean }> {
-  // Build menu options for prompt
-  const options = [
-    { value: 'approve', label: '✅ [C] Onayla ve devam et' },
-    { value: 'revise', label: '✏️ Revize et (geri bildirim ver)' },
-    { value: 'advanced', label: '🔬 [A] Gelişmiş Elicitation' },
-    { value: 'party', label: '🎉 [P] Party Mode (çoklu bakış açısı)' },
-    { value: 'regenerate', label: '🔄 Yeniden üret' },
-    { value: 'skip', label: '⏭️ Bu adımı atla' },
-  ];
-
-  const choice = await p.select({
-    message: 'Bu içerik için ne yapmak istersin?',
-    options,
-  });
-
-  if (p.isCancel(choice)) {
-    return { action: 'cancel', content: '', continue: false };
+  // Check YOLO mode first
+  if (shouldAutoContinue(currentYoloState)) {
+    return { action: 'approve', content: currentContent, continue: true };
   }
 
-  switch (choice) {
-    case 'approve':
+  // Use the new showStepMenu from template-engine
+  const menuResult = await showStepMenu(
+    currentContent,
+    stepName,
+    context,
+    adapter,
+    currentYoloState.enabled
+  );
+
+  // Handle YOLO mode activation
+  if (menuResult.yoloEnabled) {
+    currentYoloState = enableYoloMode(currentYoloState);
+    return { action: 'yolo', content: currentContent, continue: true };
+  }
+
+  // Handle choices
+  switch (menuResult.choice) {
+    case 'continue':
       return { action: 'approve', content: currentContent, continue: true };
 
-    case 'revise': {
-      const feedback = await p.text({
-        message: 'Ne değişmeli? Geri bildirimini yaz:',
-        placeholder: 'Örn: Daha fazla teknik detay ekle...',
-      });
+    case 'advanced':
+      // Use full Advanced Elicitation with 50+ methods
+      return {
+        action: 'advanced',
+        content: menuResult.enhancedContent || currentContent,
+        continue: false,
+      };
 
-      if (p.isCancel(feedback)) {
-        return { action: 'cancel', content: '', continue: false };
-      }
+    case 'party':
+      return {
+        action: 'party',
+        content: menuResult.enhancedContent || currentContent,
+        continue: false,
+      };
 
-      console.log('');
-      p.log.info('✏️ Revize ediliyor...');
+    case 'edit':
+      return {
+        action: 'edit',
+        content: menuResult.enhancedContent || currentContent,
+        continue: false,
+      };
 
-      const revisedContent = await streamResponse(
-        adapter,
-        `Mevcut içerik:
-${currentContent}
-
-Kullanıcı geri bildirimi: ${feedback}
-
-Bu geri bildirime göre içeriği güncelle. Türkçe yanıt ver.`,
-        'Sen deneyimli bir ürün geliştirme uzmanısın. İçeriği kullanıcı geri bildirimine göre güncelle.'
-      );
-
-      return { action: 'revise', content: revisedContent, continue: false };
-    }
-
-    case 'advanced': {
-      console.log('');
-      p.log.info('🔬 Gelişmiş Elicitation başlatılıyor...');
-
-      const deepContent = await streamResponse(
-        adapter,
-        `Mevcut içerik:
-${currentContent}
-
-Bu içeriği derinleştir:
-1. Eksik kalan noktaları tespit et
-2. Alternatif yaklaşımlar öner
-3. Risk ve fırsatları analiz et
-4. Daha fazla soru sor
-
-Türkçe yanıt ver.`,
-        'Sen bir Gelişmiş Elicitation uzmanısın. İçeriği derinleştir ve eksikleri tespit et.'
-      );
-
-      return { action: 'advanced', content: deepContent, continue: false };
-    }
-
-    case 'party': {
-      console.log('');
-      p.log.info('🎉 Party Mode - Farklı bakış açıları...');
-
-      const partyContent = await streamResponse(
-        adapter,
-        `Mevcut içerik:
-${currentContent}
-
-Farklı rollerdeki uzmanların bakış açısıyla değerlendir:
-1. 📊 Analist: Veri ve metrik odaklı değerlendirme
-2. 🎨 UX Tasarımcı: Kullanıcı deneyimi perspektifi
-3. 🏗️ Mimar: Teknik fizibilite değerlendirmesi
-4. 📋 PM: İş değeri ve önceliklendirme
-5. 💻 Geliştirici: Uygulama zorluğu analizi
-
-Her perspektiften kısa bir yorum yap. Türkçe yanıt ver.`,
-        'Sen bir moderatörsün. Farklı uzman rollerini simüle ederek içeriği değerlendir.'
-      );
-
-      return { action: 'party', content: partyContent, continue: false };
-    }
-
-    case 'regenerate': {
-      console.log('');
-      p.log.info('🔄 Yeniden üretiliyor...');
-      return { action: 'regenerate', content: '', continue: false };
-    }
-
-    case 'skip':
-      return { action: 'skip', content: 'Atlandı', continue: true };
+    case 'yolo':
+      currentYoloState = enableYoloMode(currentYoloState);
+      return { action: 'yolo', content: currentContent, continue: true };
 
     default:
       return { action: 'unknown', content: currentContent, continue: false };
   }
+}
+
+/**
+ * Reset YOLO state for new workflow
+ */
+export function resetYoloState(): void {
+  currentYoloState = createYoloState();
+}
+
+/**
+ * Check if YOLO mode is active
+ */
+export function isYoloModeActive(): boolean {
+  return currentYoloState.enabled;
 }
 
 /**
@@ -360,11 +334,12 @@ export async function executeStep(
     accumulatedContent = accumulatedContent + '\n\n---\n\n# 🎭 UZMAN DEĞERLENDİRMESİ\n\n' + agentReview;
   }
 
-  // Handle menu (A/P/C loop)
+  // Handle menu (A/P/C/Y loop) - Now with YOLO mode support
   while (!approved) {
     const menuResult = await handleMenu(
       step.menuOptions,
       accumulatedContent,
+      step.meta.name,
       context,
       adapter
     );
