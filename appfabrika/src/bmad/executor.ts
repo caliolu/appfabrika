@@ -516,88 +516,318 @@ Türkçe ve özlü yaz. Markdown formatında.`;
 
 /**
  * Extract techniques/options from step content
+ * Works across all BMAD workflows
  */
 function extractTechniques(content: string): string[] {
   const techniques: string[] = [];
+  const seen = new Set<string>();
 
-  // Match numbered techniques like "1. SCAMPER", "**1. SCAMPER**", etc.
-  const numberedPattern = /(?:\*\*)?(\d+)\.\s*(?:\*\*)?([^*\n]+?)(?:\*\*)?(?:\s*[-–]\s*|\s*\()/g;
+  const addTechnique = (name: string) => {
+    const cleaned = name.trim().replace(/\*\*/g, '').replace(/^[-•]\s*/, '');
+    if (cleaned.length > 3 && cleaned.length < 60 && !seen.has(cleaned.toLowerCase())) {
+      seen.add(cleaned.toLowerCase());
+      techniques.push(cleaned);
+    }
+  };
+
+  // 1. Numbered patterns: "1. Name", "**1. Name**", "1) Name"
+  const numberedPatterns = [
+    /(?:\*\*)?(\d+)[.)]\s*(?:\*\*)?([^*\n:]+?)(?:\*\*)?(?:\s*[-–:]|\s*\(|\n)/g,
+    /^(\d+)\.\s+\*\*([^*]+)\*\*/gm,
+  ];
+
+  for (const pattern of numberedPatterns) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      addTechnique(match[2]);
+    }
+  }
+
+  // 2. Lettered patterns: "A) Name", "**A)** Name", "[A] Name", "A. Name"
+  const letteredPatterns = [
+    /(?:\*\*)?([A-Z])[).]\s*(?:\*\*)?([^*\n:]+?)(?:\*\*)?(?:\s*[-–:]|\n)/g,
+    /\[([A-Z])\]\s*(?:\*\*)?([^*\n]+?)(?:\*\*)?(?:\s*[-–]|\n)/g,
+    /^###?\s*\*\*([A-Z])[.)]\s*([^*]+)\*\*/gm,
+  ];
+
+  for (const pattern of letteredPatterns) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      addTechnique(match[2]);
+    }
+  }
+
+  // 3. Bold technique/method names
+  const boldPatterns = [
+    /\*\*([^*]+?(?:Yöntemi|Tekniği|Analizi|Düşünme|Yaklaşımı|Stratejisi|Modeli|Metodu|Çerçevesi|Framework|Pattern|Analysis|Method|Approach))\*\*/gi,
+    /\*\*([^*]{5,40})\*\*\s*[-–:]\s*[A-Z]/g, // Bold followed by description
+  ];
+
+  for (const pattern of boldPatterns) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      addTechnique(match[1]);
+    }
+  }
+
+  // 4. PRD-specific patterns
+  const prdPatterns = [
+    /(?:FR|NFR|US|UC|REQ)-?\d+[.:]\s*([^\n]+)/g, // Functional requirements
+    /###\s*(?:\d+\.)?\s*([^#\n]+(?:Gereksinim|Requirement|Feature|Özellik))/gi,
+  ];
+
+  for (const pattern of prdPatterns) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      addTechnique(match[1]);
+    }
+  }
+
+  // 5. Architecture-specific patterns
+  const archPatterns = [
+    /(?:Mimari|Architecture|Pattern|Desen)[:\s]+\*\*([^*]+)\*\*/gi,
+    /\*\*(Monolitik|Mikroservis|Serverless|Event-Driven|Layered|Hexagonal|Clean Architecture|CQRS|DDD)[^*]*\*\*/gi,
+  ];
+
+  for (const pattern of archPatterns) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      addTechnique(match[1]);
+    }
+  }
+
+  // 6. UX-specific patterns
+  const uxPatterns = [
+    /\*\*(User Journey|Kullanıcı Yolculuğu|Wireframe|Mockup|Prototype|Persona|Flow|Akış)[^*]*\*\*/gi,
+    /(?:Tasarım|Design)\s+(?:Prensibi|Principle|Pattern|Desen)[:\s]+\*\*([^*]+)\*\*/gi,
+  ];
+
+  for (const pattern of uxPatterns) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      addTechnique(match[1]);
+    }
+  }
+
+  // 7. Sprint/Story patterns
+  const sprintPatterns = [
+    /(?:Epic|Story|Task|Sprint)[:\s]+\*\*([^*]+)\*\*/gi,
+    /\*\*(?:Epic|Story|Hikaye)\s+\d+[:\s]+([^*]+)\*\*/gi,
+  ];
+
+  for (const pattern of sprintPatterns) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      addTechnique(match[1]);
+    }
+  }
+
+  // 8. General heading patterns (### Heading)
+  const headingPattern = /^#{2,3}\s+(?:\d+\.)?\s*([^#\n]{5,50})/gm;
   let match;
-  while ((match = numberedPattern.exec(content)) !== null) {
-    const name = match[2].trim();
-    if (name.length > 2 && name.length < 50) {
-      techniques.push(name);
+  while ((match = headingPattern.exec(content)) !== null) {
+    const heading = match[1].trim();
+    // Only add if it looks like a technique/option (not a meta heading)
+    if (!heading.match(/^(STEP|ADIM|MENU|SUCCESS|FAILURE|CRITICAL|MANDATORY|EXECUTION)/i)) {
+      addTechnique(heading);
     }
   }
 
-  // Match lettered options like "A) Option", "**A)** Option"
-  const letteredPattern = /(?:\*\*)?([A-Z])\)(?:\*\*)?\s*(?:\*\*)?([^*\n]+?)(?:\*\*)?(?:\s*[-–]|\n)/g;
-  while ((match = letteredPattern.exec(content)) !== null) {
-    const name = match[2].trim();
-    if (name.length > 2 && name.length < 50 && !techniques.includes(name)) {
-      techniques.push(name);
-    }
-  }
-
-  // Match bold headers like "**SCAMPER Yöntemi**"
-  const boldPattern = /\*\*([^*]+?(?:Yöntemi|Tekniği|Analizi|Düşünme|Yaklaşımı))\*\*/g;
-  while ((match = boldPattern.exec(content)) !== null) {
-    const name = match[1].trim();
-    if (name.length > 2 && name.length < 50 && !techniques.includes(name)) {
-      techniques.push(name);
-    }
-  }
-
-  return techniques.slice(0, 10); // Max 10 techniques
+  return techniques.slice(0, 15); // Max 15 techniques per step
 }
 
 /**
- * Run a single technique and get output
+ * Determine the type of item for better prompting
  */
-async function runTechnique(
-  techniqueName: string,
-  techniqueIndex: number,
-  totalTechniques: number,
-  context: ExecutionContext,
-  adapter: AnthropicAdapter,
-  showOutput: boolean = true
-): Promise<string> {
-  if (showOutput) {
-    console.log('');
-    console.log(`🔄 Teknik ${techniqueIndex + 1}/${totalTechniques}: ${techniqueName}`);
-    console.log('┌' + '─'.repeat(58) + '┐');
-    console.log(`│ 🤖 ${techniqueName} Analizi:`.padEnd(59) + '│');
-    console.log('└' + '─'.repeat(58) + '┘');
+function getItemType(itemName: string, workflowName: string): { type: string; promptStyle: string } {
+  const lowerName = itemName.toLowerCase();
+  const lowerWorkflow = workflowName.toLowerCase();
+
+  if (lowerWorkflow.includes('brainstorm') || lowerName.includes('tekni') || lowerName.includes('yöntem')) {
+    return { type: 'Teknik', promptStyle: 'brainstorming' };
+  }
+  if (lowerWorkflow.includes('prd') || lowerName.includes('gereksinim') || lowerName.includes('requirement')) {
+    return { type: 'Gereksinim', promptStyle: 'prd' };
+  }
+  if (lowerWorkflow.includes('architect') || lowerName.includes('mimari') || lowerName.includes('pattern')) {
+    return { type: 'Mimari Karar', promptStyle: 'architecture' };
+  }
+  if (lowerWorkflow.includes('ux') || lowerName.includes('tasarım') || lowerName.includes('design')) {
+    return { type: 'UX Elementi', promptStyle: 'ux' };
+  }
+  if (lowerWorkflow.includes('epic') || lowerWorkflow.includes('story')) {
+    return { type: 'Story', promptStyle: 'story' };
+  }
+  if (lowerWorkflow.includes('sprint')) {
+    return { type: 'Sprint Öğesi', promptStyle: 'sprint' };
+  }
+  if (lowerWorkflow.includes('research') || lowerName.includes('araştırma')) {
+    return { type: 'Araştırma Alanı', promptStyle: 'research' };
   }
 
-  const systemPrompt = `Sen deneyimli bir ürün geliştirme ve beyin fırtınası uzmanısın.
-"${techniqueName}" tekniğini kullanarak kapsamlı bir analiz yap.
-Bu tekniğin tüm adımlarını uygula ve somut sonuçlar üret.
-Türkçe yanıt ver.`;
+  return { type: 'Öğe', promptStyle: 'generic' };
+}
 
-  const previousContext = Array.from(context.previousOutputs.entries())
-    .slice(-2)
-    .map(([id, content]) => `### ${id}\n${content.slice(0, 1000)}`)
-    .join('\n\n');
-
-  const prompt = `Proje: "${context.idea}"
+/**
+ * Build prompt based on item type
+ */
+function buildItemPrompt(
+  itemName: string,
+  itemType: { type: string; promptStyle: string },
+  context: ExecutionContext,
+  previousContext: string
+): { system: string; user: string } {
+  const baseContext = `Proje: "${context.idea}"
+Workflow: ${context.workflow.meta.name}
 
 Önceki Bağlam:
 ${previousContext || 'Yok'}
 
 ---
 
-"${techniqueName}" tekniğini "${context.idea}" projesi için uygula.
+`;
 
-Bu tekniğin:
-1. Ana prensiplerini açıkla
-2. Projeye özel olarak uygula
-3. Somut bulgular ve öneriler çıkar
-4. Aksiyon maddeleri belirle
+  switch (itemType.promptStyle) {
+    case 'brainstorming':
+      return {
+        system: `Sen deneyimli bir beyin fırtınası ve yaratıcı düşünme uzmanısın.
+"${itemName}" tekniğini kullanarak kapsamlı bir analiz yap.
+Türkçe yanıt ver.`,
+        user: baseContext + `"${itemName}" tekniğini "${context.idea}" projesi için uygula.
 
-Detaylı ve pratik ol. Türkçe yanıt ver.`;
+1. Tekniğin ana prensiplerini kısaca açıkla
+2. Projeye özel olarak uygula (somut örneklerle)
+3. Elde edilen fikirler ve bulgular
+4. Önerilen aksiyon maddeleri
 
-  const output = await streamResponse(adapter, prompt, systemPrompt, showOutput);
+Detaylı ve pratik ol.`
+      };
+
+    case 'prd':
+      return {
+        system: `Sen deneyimli bir ürün yöneticisi ve gereksinim analistsin.
+Fonksiyonel ve non-fonksiyonel gereksinimleri detaylı analiz edersin.
+Türkçe yanıt ver.`,
+        user: baseContext + `"${itemName}" gereksinimini "${context.idea}" projesi için detaylandır.
+
+1. Gereksinimin kapsamı ve tanımı
+2. Kabul kriterleri (testlenebilir maddeler)
+3. Kullanıcı senaryoları
+4. Bağımlılıklar ve önkoşullar
+5. Öncelik (Must/Should/Could/Won't)
+
+Somut ve ölçülebilir ol.`
+      };
+
+    case 'architecture':
+      return {
+        system: `Sen deneyimli bir yazılım mimarısın.
+Mimari kararları ve pattern'leri detaylı analiz edersin.
+Türkçe yanıt ver.`,
+        user: baseContext + `"${itemName}" mimari yaklaşımını "${context.idea}" projesi için değerlendir.
+
+1. Bu yaklaşımın tanımı ve prensipleri
+2. Projeye uygunluk analizi
+3. Avantajlar ve dezavantajlar
+4. Uygulama stratejisi
+5. Riskler ve azaltma yöntemleri
+
+Teknik ve pratik ol.`
+      };
+
+    case 'ux':
+      return {
+        system: `Sen deneyimli bir UX tasarımcısısın.
+Kullanıcı deneyimi ve arayüz tasarımı konusunda uzmansın.
+Türkçe yanıt ver.`,
+        user: baseContext + `"${itemName}" UX elementini "${context.idea}" projesi için tasarla.
+
+1. Element tanımı ve amacı
+2. Kullanıcı etkileşimi akışı
+3. Görsel tasarım önerileri
+4. Erişilebilirlik kriterleri
+5. Responsive davranış
+
+Kullanıcı odaklı ol.`
+      };
+
+    case 'story':
+      return {
+        system: `Sen deneyimli bir Agile koç ve product owner'sın.
+User story ve epic yazımında uzmansın.
+Türkçe yanıt ver.`,
+        user: baseContext + `"${itemName}" hikayesini "${context.idea}" projesi için detaylandır.
+
+1. User Story formatı (As a... I want... So that...)
+2. Kabul kriterleri (Given/When/Then)
+3. Story point tahmini
+4. Alt görevler
+5. Bağımlılıklar
+
+INVEST kriterlerine uygun ol.`
+      };
+
+    case 'research':
+      return {
+        system: `Sen deneyimli bir araştırmacı ve analistsin.
+Pazar, teknik ve domain araştırması konusunda uzmansın.
+Türkçe yanıt ver.`,
+        user: baseContext + `"${itemName}" araştırma alanını "${context.idea}" projesi için analiz et.
+
+1. Araştırma kapsamı ve soruları
+2. Mevcut durum analizi
+3. Rakip/alternatif analizi
+4. Fırsat ve tehditler
+5. Öneriler ve sonuçlar
+
+Veri odaklı ve objektif ol.`
+      };
+
+    default:
+      return {
+        system: `Sen deneyimli bir ürün geliştirme uzmanısın.
+BMAD metodolojisini kullanarak kapsamlı analiz yaparsın.
+Türkçe yanıt ver.`,
+        user: baseContext + `"${itemName}" öğesini "${context.idea}" projesi için analiz et.
+
+1. Tanım ve kapsam
+2. Projeye uygulanması
+3. Bulgular ve öneriler
+4. Aksiyon maddeleri
+
+Detaylı ve pratik ol.`
+      };
+  }
+}
+
+/**
+ * Run a single technique/item and get output
+ */
+async function runTechnique(
+  itemName: string,
+  itemIndex: number,
+  totalItems: number,
+  context: ExecutionContext,
+  adapter: AnthropicAdapter,
+  showOutput: boolean = true
+): Promise<string> {
+  const itemType = getItemType(itemName, context.workflow.meta.name);
+
+  if (showOutput) {
+    console.log('');
+    console.log(`🔄 ${itemType.type} ${itemIndex + 1}/${totalItems}: ${itemName}`);
+    console.log('┌' + '─'.repeat(58) + '┐');
+    console.log(`│ 🤖 ${itemName.slice(0, 45)} Analizi:`.padEnd(59) + '│');
+    console.log('└' + '─'.repeat(58) + '┘');
+  }
+
+  const previousContext = Array.from(context.previousOutputs.entries())
+    .slice(-2)
+    .map(([id, content]) => `### ${id}\n${content.slice(0, 1000)}`)
+    .join('\n\n');
+
+  const prompts = buildItemPrompt(itemName, itemType, context, previousContext);
+  const output = await streamResponse(adapter, prompts.user, prompts.system, showOutput);
 
   if (showOutput) {
     console.log('────────────────────────────────────────────────────────────');
