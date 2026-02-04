@@ -185,34 +185,44 @@ class TokenTracker {
    * Display stats summary to console
    */
   displaySummary(): void {
-    const stats = this.sessionStats;
+    console.log(this.getSummary());
+  }
 
-    console.log('');
-    console.log('╔════════════════════════════════════════════════════════════╗');
-    console.log('║                  💰 API KULLANIM ÖZETİ                      ║');
-    console.log('╠════════════════════════════════════════════════════════════╣');
-    console.log(`║ Input Tokens:  ${stats.totalInputTokens.toLocaleString().padStart(15)}                       ║`);
-    console.log(`║ Output Tokens: ${stats.totalOutputTokens.toLocaleString().padStart(15)}                       ║`);
-    console.log(`║ Toplam Tokens: ${stats.totalTokens.toLocaleString().padStart(15)}                       ║`);
-    console.log('╟────────────────────────────────────────────────────────────╢');
-    console.log(`║ Tahmini Maliyet: $${stats.totalCost.toFixed(4).padStart(12)}                       ║`);
-    console.log(`║ İstek Sayısı:    ${stats.requestCount.toString().padStart(12)}                       ║`);
-    console.log('╟────────────────────────────────────────────────────────────╢');
+  /**
+   * Get stats summary as string
+   */
+  getSummary(): string {
+    const stats = this.sessionStats;
+    const lines: string[] = [];
+
+    lines.push('');
+    lines.push('╔════════════════════════════════════════════════════════════╗');
+    lines.push('║                  💰 API KULLANIM ÖZETİ                      ║');
+    lines.push('╠════════════════════════════════════════════════════════════╣');
+    lines.push(`║ Input Tokens:  ${stats.totalInputTokens.toLocaleString().padStart(15)}                       ║`);
+    lines.push(`║ Output Tokens: ${stats.totalOutputTokens.toLocaleString().padStart(15)}                       ║`);
+    lines.push(`║ Toplam Tokens: ${stats.totalTokens.toLocaleString().padStart(15)}                       ║`);
+    lines.push('╟────────────────────────────────────────────────────────────╢');
+    lines.push(`║ Tahmini Maliyet: $${stats.totalCost.toFixed(4).padStart(12)}                       ║`);
+    lines.push(`║ İstek Sayısı:    ${stats.requestCount.toString().padStart(12)}                       ║`);
+    lines.push('╟────────────────────────────────────────────────────────────╢');
 
     // Workflow breakdown
     const workflows = Object.entries(stats.usageByWorkflow);
     if (workflows.length > 0) {
-      console.log('║ Workflow Bazında:                                          ║');
+      lines.push('║ Workflow Bazında:                                          ║');
       for (const [wfId, wfStats] of workflows.slice(0, 5)) {
         const shortId = wfId.length > 25 ? wfId.slice(0, 22) + '...' : wfId;
-        console.log(`║   ${shortId.padEnd(28)} $${wfStats.cost.toFixed(4).padStart(8)} ║`);
+        lines.push(`║   ${shortId.padEnd(28)} $${wfStats.cost.toFixed(4).padStart(8)} ║`);
       }
       if (workflows.length > 5) {
-        console.log(`║   ... ve ${workflows.length - 5} workflow daha                          ║`);
+        lines.push(`║   ... ve ${workflows.length - 5} workflow daha                          ║`);
       }
     }
 
-    console.log('╚════════════════════════════════════════════════════════════╝');
+    lines.push('╚════════════════════════════════════════════════════════════╝');
+
+    return lines.join('\n');
   }
 
   /**

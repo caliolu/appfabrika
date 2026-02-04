@@ -340,7 +340,14 @@ program
     );
 
     if (result.success) {
-      p.outro(`✅ Workflow tamamlandı${result.outputPath ? `: ${result.outputPath}` : ''}`);
+      let outroMsg = '✅ Workflow tamamlandı';
+      if (result.outputPath) {
+        outroMsg += `\n   📄 Output: ${result.outputPath}`;
+      }
+      if (result.transcriptPath) {
+        outroMsg += `\n   📝 Transcript: ${result.transcriptPath}`;
+      }
+      p.outro(outroMsg);
       process.exit(0);
     } else {
       p.outro('❌ Workflow başarısız');

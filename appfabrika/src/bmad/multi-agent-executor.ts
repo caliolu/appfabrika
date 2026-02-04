@@ -10,8 +10,8 @@
  */
 
 import { join, dirname } from 'node:path';
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { existsSync, mkdirSync } from 'node:fs';
+import { readFile, writeFile, appendFile } from 'node:fs/promises';
 import * as p from '@clack/prompts';
 import type { AnthropicAdapter } from '../adapters/llm/anthropic.adapter.js';
 import {
@@ -97,6 +97,16 @@ interface MultiAgentState {
   stepFiles: string[];
   inputDocuments: DiscoveryResult | null;
   outputPath?: string;
+  transcriptPath?: string;
+}
+
+/**
+ * Transcript entry types
+ */
+interface TranscriptEntry {
+  timestamp: string;
+  type: 'header' | 'step' | 'facilitator' | 'user' | 'action' | 'output' | 'menu' | 'system';
+  content: string;
 }
 
 /**
@@ -636,13 +646,18 @@ export class MultiAgentBmadExecutor {
     this.state.stepFiles = await findWorkflowSteps(this.state.workflow);
     logger.info('Step files found', { count: this.state.stepFiles.length });
 
+    // Create transcript file
+    await this.initializeTranscript();
+
     // Discover input documents
     const discovery = createInputDiscovery(this.state.config, this.state.projectRoot);
     this.state.inputDocuments = await discovery.discoverAll();
 
     if (this.state.inputDocuments.totalLoaded > 0) {
       console.log('');
-      console.log(discovery.generateReport(this.state.inputDocuments));
+      const report = discovery.generateReport(this.state.inputDocuments);
+      console.log(report);
+      await this.writeTranscript('system', report);
     }
 
     // Check for continuation
@@ -655,14 +670,93 @@ export class MultiAgentBmadExecutor {
         p.log.info(`📂 Mevcut doküman bulundu (Adım ${lastStep})`);
         this.state.currentStepIndex = lastStep;
         this.state.outputPath = outputPath;
+        await this.writeTranscript('system', `Mevcut doküman bulundu (Adım ${lastStep})`);
       }
+    }
+  }
+
+  /**
+   * Initialize transcript file
+   */
+  private async initializeTranscript(): Promise<void> {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const workflowName = this.state.workflow.name.replace(/\s+/g, '-').toLowerCase();
+    const transcriptDir = join(this.state.projectRoot, 'docs', 'transcripts');
+
+    // Create directory if not exists
+    if (!existsSync(transcriptDir)) {
+      mkdirSync(transcriptDir, { recursive: true });
+    }
+
+    this.state.transcriptPath = join(transcriptDir, `${workflowName}-${timestamp}.md`);
+
+    // Write header
+    const header = `# BMAD Multi-Agent Transcript
+
+**Workflow:** ${this.state.workflow.name}
+**Date:** ${new Date().toISOString()}
+**Project Idea:** ${this.state.projectIdea}
+
+---
+
+## Conversation Log
+
+`;
+
+    await writeFile(this.state.transcriptPath, header, 'utf-8');
+    console.log(`📝 Transcript: ${this.state.transcriptPath}`);
+  }
+
+  /**
+   * Write entry to transcript file
+   */
+  private async writeTranscript(
+    type: 'header' | 'step' | 'facilitator' | 'user' | 'action' | 'output' | 'menu' | 'system',
+    content: string
+  ): Promise<void> {
+    if (!this.state.transcriptPath) return;
+
+    const timestamp = new Date().toISOString().slice(11, 19);
+    let entry = '';
+
+    switch (type) {
+      case 'header':
+        entry = `\n## ${content}\n\n`;
+        break;
+      case 'step':
+        entry = `\n### 📌 ${content}\n\n`;
+        break;
+      case 'facilitator':
+        entry = `**[${timestamp}] 🎭 Facilitator:**\n\n${content}\n\n---\n\n`;
+        break;
+      case 'user':
+        entry = `**[${timestamp}] 👤 User Agent:**\n\n${content}\n\n---\n\n`;
+        break;
+      case 'action':
+        entry = `**[${timestamp}] ⚡ Action:** ${content}\n\n`;
+        break;
+      case 'output':
+        entry = `**[${timestamp}] 📤 Output:**\n\n${content}\n\n`;
+        break;
+      case 'menu':
+        entry = `**[${timestamp}] 📋 Menu Selection:** ${content}\n\n`;
+        break;
+      case 'system':
+        entry = `*[${timestamp}] System: ${content}*\n\n`;
+        break;
+    }
+
+    try {
+      await appendFile(this.state.transcriptPath, entry, 'utf-8');
+    } catch (error) {
+      logger.warn('Failed to write transcript entry', { error });
     }
   }
 
   /**
    * Execute full workflow
    */
-  async execute(): Promise<{ success: boolean; outputPath?: string }> {
+  async execute(): Promise<{ success: boolean; outputPath?: string; transcriptPath?: string }> {
     await this.initialize();
 
     console.log('');
@@ -671,6 +765,8 @@ export class MultiAgentBmadExecutor {
     console.log('╠══════════════════════════════════════════════════════════════╣');
     console.log('║ Facilitator Agent ←→ User Agent                             ║');
     console.log('╚══════════════════════════════════════════════════════════════╝');
+
+    await this.writeTranscript('header', `MULTI-AGENT BMAD: ${this.state.workflow.name}`);
 
     // Execute each step
     while (this.state.currentStepIndex < this.state.stepFiles.length) {
@@ -684,14 +780,19 @@ export class MultiAgentBmadExecutor {
       const step = await loadStepFile(stepFile);
       if (!step) {
         p.log.error(`Step yüklenemedi: ${stepFile}`);
-        return { success: false };
+        await this.writeTranscript('system', `Step yüklenemedi: ${stepFile}`);
+        return { success: false, transcriptPath: this.state.transcriptPath };
       }
+
+      await this.writeTranscript('step', `Step ${this.state.currentStepIndex + 1}: ${step.name}`);
 
       // Execute step
       const result = await this.executeStep(step);
 
       if (result === 'cancel') {
-        return { success: false };
+        await this.writeTranscript('system', 'Workflow iptal edildi');
+        await this.finalizeTranscript(false);
+        return { success: false, transcriptPath: this.state.transcriptPath };
       }
 
       if (result === 'complete') {
@@ -722,10 +823,51 @@ export class MultiAgentBmadExecutor {
     // Show token summary
     tokenTracker.displaySummary();
 
+    // Finalize transcript
+    await this.finalizeTranscript(true);
+
+    console.log('');
+    console.log(`📝 Transcript saved: ${this.state.transcriptPath}`);
+    if (this.state.outputPath) {
+      console.log(`📄 Output saved: ${this.state.outputPath}`);
+    }
+
     return {
       success: true,
       outputPath: this.state.outputPath,
+      transcriptPath: this.state.transcriptPath,
     };
+  }
+
+  /**
+   * Finalize transcript with summary
+   */
+  private async finalizeTranscript(success: boolean): Promise<void> {
+    if (!this.state.transcriptPath) return;
+
+    const summary = `
+---
+
+## Summary
+
+**Status:** ${success ? '✅ Completed' : '❌ Failed/Cancelled'}
+**Total Steps:** ${this.state.currentStepIndex + 1}/${this.state.stepFiles.length}
+**Total Conversation Turns:** ${this.state.conversationHistory.length}
+**Completed At:** ${new Date().toISOString()}
+
+### Token Usage
+${tokenTracker.getSummary()}
+
+### Output Files
+${this.state.outputPath ? `- Document: ${this.state.outputPath}` : '- No document generated'}
+- Transcript: ${this.state.transcriptPath}
+`;
+
+    try {
+      await appendFile(this.state.transcriptPath, summary, 'utf-8');
+    } catch (error) {
+      logger.warn('Failed to finalize transcript', { error });
+    }
   }
 
   /**
@@ -786,6 +928,7 @@ export class MultiAgentBmadExecutor {
         );
         console.log(this.indent(facilitatorMessage));
         this.addToConversation('facilitator', facilitatorMessage);
+        await this.writeTranscript('facilitator', facilitatorMessage);
 
         // User agent responds
         console.log('');
@@ -796,6 +939,7 @@ export class MultiAgentBmadExecutor {
         );
         console.log(this.indent(userResponse));
         this.addToConversation('user', userResponse);
+        await this.writeTranscript('user', userResponse);
 
         // Facilitator processes response
         const synthesis = await this.facilitator.processResponse(
@@ -808,6 +952,7 @@ export class MultiAgentBmadExecutor {
           console.log('   🎭 Facilitator (özet):');
           console.log(this.indent(synthesis));
           this.addToConversation('facilitator', synthesis);
+          await this.writeTranscript('facilitator', `(Özet) ${synthesis}`);
         }
 
         return 'continue';
@@ -822,6 +967,7 @@ export class MultiAgentBmadExecutor {
           conversationContext
         );
         console.log(this.indent(content));
+        await this.writeTranscript('output', `**${instruction.title}**\n\n${content}`);
 
         // Store generated content
         this.state.generatedContent.set(instruction.title, content);
@@ -860,8 +1006,17 @@ export class MultiAgentBmadExecutor {
         });
 
         if (p.isCancel(choice) || choice === 'x') {
+          await this.writeTranscript('menu', 'İptal');
           return 'cancel';
         }
+
+        const choiceLabels: Record<string, string> = {
+          c: 'Continue',
+          a: 'Advanced',
+          p: 'Party Mode',
+          y: 'YOLO',
+        };
+        await this.writeTranscript('menu', choiceLabels[choice as string] || choice as string);
 
         if (choice === 'y') {
           return 'yolo';
@@ -922,6 +1077,7 @@ export class MultiAgentBmadExecutor {
         // Execute the action
         console.log('');
         console.log(`   ⚡ Action: ${tag.content.slice(0, 80)}${tag.content.length > 80 ? '...' : ''}`);
+        await this.writeTranscript('action', tag.content);
 
         // Let facilitator handle the action
         const actionResult = await this.facilitator.generateContent(
@@ -940,6 +1096,7 @@ export class MultiAgentBmadExecutor {
         if (actionResult.trim()) {
           console.log(this.indent(actionResult.slice(0, 500)));
           this.addToConversation('facilitator', actionResult);
+          await this.writeTranscript('facilitator', actionResult);
         }
 
         return 'continue';
@@ -977,6 +1134,7 @@ export class MultiAgentBmadExecutor {
         console.log('   🎭 Facilitator (soru):');
         console.log(this.indent(tag.content));
         this.addToConversation('facilitator', tag.content);
+        await this.writeTranscript('facilitator', `(Soru) ${tag.content}`);
 
         // User agent responds
         console.log('');
@@ -987,6 +1145,7 @@ export class MultiAgentBmadExecutor {
         );
         console.log(this.indent(response));
         this.addToConversation('user', response);
+        await this.writeTranscript('user', response);
 
         return 'continue';
       }
@@ -997,6 +1156,7 @@ export class MultiAgentBmadExecutor {
         console.log('   📤 Output:');
         const resolvedOutput = this.resolveVariables(tag.content);
         console.log(this.indent(resolvedOutput));
+        await this.writeTranscript('output', resolvedOutput);
         return 'continue';
       }
 
@@ -1039,6 +1199,7 @@ export class MultiAgentBmadExecutor {
         );
 
         console.log(this.indent(content.slice(0, 1000)));
+        await this.writeTranscript('output', `**Template Output**\n\n${content}`);
 
         // Save to document if we have output path
         if (this.state.outputPath) {
@@ -1061,8 +1222,17 @@ export class MultiAgentBmadExecutor {
         });
 
         if (p.isCancel(choice)) {
+          await this.writeTranscript('menu', 'İptal');
           return 'cancel';
         }
+
+        const menuChoiceLabels: Record<string, string> = {
+          c: 'Continue',
+          a: 'Advanced',
+          p: 'Party Mode',
+          y: 'YOLO',
+        };
+        await this.writeTranscript('menu', menuChoiceLabels[choice as string] || choice as string);
 
         if (choice === 'y') {
           return 'yolo';
@@ -1247,7 +1417,7 @@ export async function executeMultiAgentBmad(
   projectRoot: string,
   projectIdea: string,
   projectContext: string = ''
-): Promise<{ success: boolean; outputPath?: string }> {
+): Promise<{ success: boolean; outputPath?: string; transcriptPath?: string }> {
   const executor = new MultiAgentBmadExecutor(
     adapter,
     workflow,
