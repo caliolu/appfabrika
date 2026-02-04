@@ -18,6 +18,13 @@ import {
   runSingleWorkflow,
   listWorkflows,
 } from '../bmad/orchestrator.js';
+import {
+  findBmadRootReal,
+  discoverWorkflows,
+  type RealWorkflowDef,
+} from '../bmad/real-workflow-loader.js';
+import { executeRealWorkflow } from '../bmad/real-step-executor.js';
+import { dirname } from 'node:path';
 
 const program = new Command();
 
@@ -124,6 +131,99 @@ program
     );
 
     process.exit(success ? 0 : 1);
+  });
+
+// Real BMAD command - uses actual _bmad folder
+program
+  .command('bmad [workflow]')
+  .description('Gerçek BMAD workflow çalıştır (_bmad klasöründen)')
+  .option('-p, --path <path>', 'Proje dizini', process.cwd())
+  .option('-l, --list', 'Mevcut workflow\'ları listele')
+  .action(async (workflowId: string | undefined, options) => {
+    // Find BMAD root
+    const bmadRoot = await findBmadRootReal(options.path);
+    if (!bmadRoot) {
+      p.log.error('_bmad klasörü bulunamadı. BMAD kurulu mu?');
+      process.exit(1);
+    }
+
+    const projectRoot = dirname(bmadRoot);
+
+    // Discover workflows
+    const discovery = await discoverWorkflows(bmadRoot);
+
+    // List mode only
+    if (options.list && !workflowId) {
+      console.log('');
+      console.log('╔══════════════════════════════════════════════════════════════╗');
+      console.log('║              📋 BMAD WORKFLOW\'LAR (_bmad)                     ║');
+      console.log('╠══════════════════════════════════════════════════════════════╣');
+
+      for (const [phase, workflows] of discovery.phases.entries()) {
+        console.log(`║ ${phase.toUpperCase()}`.padEnd(63) + '║');
+        console.log('╟──────────────────────────────────────────────────────────────╢');
+        for (const wf of workflows) {
+          console.log(`║   ${wf.name.padEnd(40)} ${wf.phase.slice(0, 12).padEnd(12)} ║`);
+        }
+      }
+
+      console.log('╟──────────────────────────────────────────────────────────────╢');
+      console.log(`║ Toplam: ${discovery.workflows.length} workflow`.padEnd(63) + '║');
+      console.log('╚══════════════════════════════════════════════════════════════╝');
+      process.exit(0);
+    }
+
+    // Interactive mode - select workflow if not provided
+    if (!workflowId) {
+      const choices = discovery.workflows.map(wf => ({
+        value: wf.name,
+        label: `${wf.name} (${wf.phase})`,
+        hint: wf.description?.slice(0, 40),
+      }));
+
+      const selected = await p.select({
+        message: 'Hangi workflow\'u çalıştırmak istersin?',
+        options: choices,
+      });
+
+      if (p.isCancel(selected)) {
+        process.exit(0);
+      }
+
+      workflowId = selected as string;
+    }
+
+    // Find workflow
+    const workflow = discovery.workflows.find(
+      wf => wf.name === workflowId || wf.name.includes(workflowId!)
+    );
+
+    if (!workflow) {
+      p.log.error(`Workflow bulunamadı: ${workflowId}`);
+      p.log.info('Mevcut workflow\'lar için: appfabrika bmad --list');
+      process.exit(1);
+    }
+
+    // Now we need API key for execution
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      p.log.error('ANTHROPIC_API_KEY çevre değişkeni bulunamadı.');
+      process.exit(1);
+    }
+
+    const adapter = new AnthropicAdapter({ apiKey });
+
+    // Execute workflow
+    p.intro(`🏭 ${workflow.name}`);
+    const result = await executeRealWorkflow(adapter, workflow, discovery.config, projectRoot);
+
+    if (result.success) {
+      p.outro(`✅ Workflow tamamlandı${result.outputPath ? `: ${result.outputPath}` : ''}`);
+      process.exit(0);
+    } else {
+      p.outro('❌ Workflow başarısız');
+      process.exit(1);
+    }
   });
 
 // Docs commands
