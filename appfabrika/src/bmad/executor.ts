@@ -377,3 +377,115 @@ Türkçe yanıt ver. Markdown formatında yaz.`;
 
   return alternatives;
 }
+
+/**
+ * Generate workflow summary/synthesis from all step outputs
+ */
+export async function generateWorkflowSummary(
+  workflowName: string,
+  workflowDescription: string,
+  stepOutputs: string,
+  context: ExecutionContext,
+  adapter: AnthropicAdapter
+): Promise<string> {
+  const systemPrompt = `Sen deneyimli bir ürün geliştirme uzmanısın.
+Bir workflow'un tüm adımlarını analiz edip kapsamlı bir özet/sentez oluşturuyorsun.
+Bu özet, sonraki workflow'lara girdi olarak kullanılacak.`;
+
+  const prompt = `Proje: "${context.idea}"
+Workflow: ${workflowName}
+Açıklama: ${workflowDescription}
+
+Tamamlanan Adımların Çıktıları:
+${stepOutputs}
+
+---
+
+Lütfen bu workflow'un kapsamlı bir özetini oluştur:
+
+## ${workflowName} - Özet
+
+### Ana Bulgular
+(En önemli 5-7 bulgu)
+
+### Kararlar
+(Alınan kararlar ve gerekçeleri)
+
+### Sonraki Adımlar İçin Girdiler
+(Sonraki workflow'lara aktarılması gereken kritik bilgiler)
+
+### Açık Sorular
+(Henüz cevaplanmamış sorular varsa)
+
+### Riskler ve Dikkat Edilecekler
+(Tespit edilen riskler)
+
+Türkçe ve özlü yaz. Markdown formatında.`;
+
+  console.log('');
+  console.log('═'.repeat(60));
+  console.log(`📊 ${workflowName.toUpperCase()} - ÖZET OLUŞTURULUYOR`);
+  console.log('═'.repeat(60));
+
+  const summary = await streamResponse(adapter, prompt, systemPrompt);
+
+  return summary;
+}
+
+/**
+ * Execute step in auto mode (no user interaction, just AI generation)
+ */
+export async function executeStepAuto(
+  step: ParsedStep,
+  context: ExecutionContext,
+  adapter: AnthropicAdapter
+): Promise<StepResult> {
+  console.log('');
+  console.log('─'.repeat(50));
+  console.log(`🤖 ${step.meta.name}`);
+  if (step.meta.description) {
+    console.log(`   ${step.meta.description}`);
+  }
+  console.log('─'.repeat(50));
+
+  const systemPrompt = `Sen deneyimli bir ürün geliştirme uzmanısın. BMAD metodolojisini kullanıyorsun.
+Bu adımı otomatik olarak tamamla. Kapsamlı ve detaylı çıktı üret.
+Türkçe yanıt ver.`;
+
+  // Build context from previous outputs
+  const previousContext = Array.from(context.previousOutputs.entries())
+    .slice(-2)
+    .map(([id, content]) => `### ${id}\n${content.slice(0, 1500)}`)
+    .join('\n\n');
+
+  // Build prompt from step content
+  let stepContent = step.goal || '';
+  for (const section of step.sections) {
+    stepContent += `\n\n### ${section.title}\n${section.content}`;
+  }
+
+  const prompt = `Proje: "${context.idea}"
+Workflow: ${context.workflow.meta.name}
+Adım: ${step.meta.name}
+Açıklama: ${step.meta.description}
+
+Önceki Çıktılar:
+${previousContext || 'Yok'}
+
+Adım İçeriği:
+${stepContent}
+
+---
+
+Bu adımı tamamla. Tüm gereksinimleri karşıla. Türkçe ve detaylı yanıt ver.`;
+
+  const output = await streamResponse(adapter, prompt, systemPrompt);
+
+  return {
+    success: true,
+    output,
+    userApproved: true, // Auto mode = auto approved
+    nextStep: step.meta.nextStepFile,
+    iterations: 1,
+  };
+}

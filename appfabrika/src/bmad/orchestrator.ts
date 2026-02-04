@@ -18,12 +18,17 @@ import {
   type ParsedWorkflow,
 } from './types.js';
 import { parseWorkflow, findBmadRoot } from './parser.js';
-import { executeStep } from './executor.js';
+import { executeStep, executeStepAuto, generateWorkflowSummary } from './executor.js';
 
 /**
  * Workflow selection mode
  */
 type WorkflowMode = 'all' | 'required' | 'custom';
+
+/**
+ * Execution mode
+ */
+type ExecutionMode = 'interactive' | 'auto';
 
 /**
  * Orchestrator configuration
@@ -34,6 +39,7 @@ interface OrchestratorConfig {
   projectName: string;
   idea: string;
   adapter: AnthropicAdapter;
+  mode: ExecutionMode;
 }
 
 /**
@@ -206,33 +212,42 @@ export class BmadOrchestrator {
       // Execute each step
       let stepIndex = 0;
       let workflowOutput = '';
+      const isAutoMode = this.config.mode === 'auto';
 
       for (const step of parsedWorkflow.steps) {
         stepIndex++;
         console.log('');
         p.log.info(`Adım ${stepIndex}/${parsedWorkflow.steps.length}`);
 
-        const result = await executeStep(step, context, this.config.adapter);
+        // Use auto or interactive execution based on mode
+        const result = isAutoMode
+          ? await executeStepAuto(step, context, this.config.adapter)
+          : await executeStep(step, context, this.config.adapter);
 
         if (!result.success) {
           p.log.error(`Adım başarısız: ${step.meta.name}`);
 
-          const action = await p.select({
-            message: 'Ne yapmak istersin?',
-            options: [
-              { value: 'retry', label: '🔄 Yeniden dene' },
-              { value: 'skip', label: '⏭️ Bu adımı atla' },
-              { value: 'abort', label: '🛑 Workflow\'u iptal et' },
-            ],
-          });
+          if (isAutoMode) {
+            // In auto mode, log and continue
+            p.log.warn('Otomatik modda devam ediliyor...');
+          } else {
+            const action = await p.select({
+              message: 'Ne yapmak istersin?',
+              options: [
+                { value: 'retry', label: '🔄 Yeniden dene' },
+                { value: 'skip', label: '⏭️ Bu adımı atla' },
+                { value: 'abort', label: '🛑 Workflow\'u iptal et' },
+              ],
+            });
 
-          if (p.isCancel(action) || action === 'abort') {
-            return false;
-          }
+            if (p.isCancel(action) || action === 'abort') {
+              return false;
+            }
 
-          if (action === 'retry') {
-            stepIndex--; // Retry this step
-            continue;
+            if (action === 'retry') {
+              stepIndex--; // Retry this step
+              continue;
+            }
           }
         }
 
@@ -244,11 +259,43 @@ export class BmadOrchestrator {
         await this.saveCheckpoint(workflow.id, stepIndex, workflowOutput);
       }
 
+      // Generate workflow summary
+      console.log('');
+      p.log.info('📊 Workflow özeti oluşturuluyor...');
+
+      const summary = await generateWorkflowSummary(
+        workflow.name,
+        workflow.description,
+        workflowOutput,
+        context,
+        this.config.adapter
+      );
+
+      // Append summary to workflow output
+      const finalOutput = workflowOutput + '\n\n---\n\n# ÖZET\n' + summary;
+
+      // In interactive mode, show summary and ask for approval
+      if (!isAutoMode) {
+        const approved = await p.confirm({
+          message: 'Bu özet sonraki workflow\'lara aktarılacak. Onaylıyor musun?',
+          initialValue: true,
+        });
+
+        if (p.isCancel(approved) || !approved) {
+          p.log.warn('Özet onaylanmadı, yeniden düzenleme gerekebilir.');
+        }
+      }
+
       // Mark workflow as complete
       this.completedWorkflows.add(workflow.id);
-      this.workflowOutputs.set(workflow.id, workflowOutput);
+      this.workflowOutputs.set(workflow.id, finalOutput);
+
+      // Save final output to docs folder
+      await this.saveWorkflowOutput(workflow.id, workflow.name, finalOutput);
 
       p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      console.log('');
+      console.log('📄 Çıktı kaydedildi: docs/' + workflow.id + '.md');
 
       return true;
     } catch (error) {
@@ -311,6 +358,37 @@ export class BmadOrchestrator {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Save workflow output to docs folder
+   */
+  private async saveWorkflowOutput(
+    workflowId: string,
+    workflowName: string,
+    content: string
+  ): Promise<void> {
+    const docsDir = join(this.config.projectPath, 'docs');
+    await mkdir(docsDir, { recursive: true });
+
+    const filename = `${workflowId}.md`;
+    const filePath = join(docsDir, filename);
+
+    const header = `---
+workflow: ${workflowId}
+name: ${workflowName}
+project: ${this.config.projectName}
+generatedAt: ${new Date().toISOString()}
+---
+
+# ${workflowName}
+
+> Proje: ${this.config.projectName}
+> Fikir: ${this.config.idea}
+
+`;
+
+    await writeFile(filePath, header + content, 'utf-8');
   }
 
   /**
@@ -392,7 +470,8 @@ export async function runBmadWorkflow(
   projectPath: string,
   projectName: string,
   idea: string,
-  adapter: AnthropicAdapter
+  adapter: AnthropicAdapter,
+  mode: 'interactive' | 'auto' = 'interactive'
 ): Promise<boolean> {
   // Find BMAD root
   const bmadRoot = await findBmadRoot(projectPath);
@@ -418,6 +497,7 @@ export async function runBmadWorkflow(
       projectName,
       idea,
       adapter,
+      mode,
     });
 
     const result = await orchestrator.run();
@@ -430,6 +510,7 @@ export async function runBmadWorkflow(
     projectName,
     idea,
     adapter,
+    mode,
   });
 
   const result = await orchestrator.run();
