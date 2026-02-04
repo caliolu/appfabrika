@@ -39,11 +39,22 @@ const MESSAGES = {
   PRESS_ENTER: 'Tamamladıktan sonra Enter\'a basın...',
   WORKFLOW_COMPLETE: 'Workflow tamamlandı!',
   MODE_SELECT: '🎯 Çalışma Modu',
-  MODE_INTERACTIVE: '🎨 İnteraktif mod (her adımda seçenekler, geri bildirim, iterasyonlar)',
-  MODE_QUICK: '⚡ Hızlı mod (otomatik çalıştır, minimal etkileşim)',
-  MODE_BMAD: '🏭 BMAD Full İnteraktif (tüm fazlar, tüm adımlar, kullanıcı onayı)',
-  MODE_BMAD_AUTO: '🤖 BMAD Full Otomatik (tüm fazlar, tüm adımlar, tam otomatik)',
 } as const;
+
+/**
+ * Display mode overview
+ */
+function displayModeOverview(): void {
+  console.log('');
+  console.log('┌────────────────────────────────────────────────────────────┐');
+  console.log('│                    🎯 ÇALIŞMA MODLARI                      │');
+  console.log('├────────────────────────────────────────────────────────────┤');
+  console.log('│ 1. Full İnteraktif   │ Tüm 80+ adım, her adımda onay      │');
+  console.log('│ 2. Full Otomatik     │ Tüm 80+ adım, tam otomatik         │');
+  console.log('│ 3. Hızlı İnteraktif  │ Zorunlu ~30 adım, her adımda onay  │');
+  console.log('│ 4. Hızlı Otomatik    │ Zorunlu ~30 adım, tam otomatik     │');
+  console.log('└────────────────────────────────────────────────────────────┘');
+}
 
 /**
  * Step execution mode
@@ -484,31 +495,30 @@ export const startCommand = new Command('start')
       workflowMode = 'bmad-auto';
     } else {
       // Ask user for mode
-      console.log('');
-      p.log.info(MESSAGES.MODE_SELECT);
+      displayModeOverview();
 
       const modeChoice = await p.select({
-        message: 'Nasıl çalışmak istersiniz?',
+        message: 'Mod seçin:',
         options: [
           {
             value: 'bmad',
-            label: MESSAGES.MODE_BMAD,
-            hint: 'Tüm fazlar, tüm workflow\'lar seçilebilir, her adımda onay',
+            label: '1. Full İnteraktif',
+            hint: 'Tüm workflow\'lar, her adımda onay',
           },
           {
             value: 'bmad-auto',
-            label: MESSAGES.MODE_BMAD_AUTO,
-            hint: 'Tüm fazlar, tüm workflow\'lar seçilebilir, tam otomatik',
+            label: '2. Full Otomatik',
+            hint: 'Tüm workflow\'lar, tam otomatik',
           },
           {
             value: 'interactive',
-            label: MESSAGES.MODE_INTERACTIVE,
-            hint: 'Sadece zorunlu workflow\'lar, her adımda onay',
+            label: '3. Hızlı İnteraktif',
+            hint: 'Zorunlu workflow\'lar, her adımda onay',
           },
           {
             value: 'quick',
-            label: MESSAGES.MODE_QUICK,
-            hint: 'Sadece zorunlu workflow\'lar, tam otomatik',
+            label: '4. Hızlı Otomatik',
+            hint: 'Zorunlu workflow\'lar, tam otomatik',
           },
         ],
       });
