@@ -34,6 +34,9 @@ import {
   editorialReviewStructure,
   quickSpec,
   quickDev,
+  getHelp,
+  indexDocs,
+  shardDoc,
 } from './advanced-features.js';
 import {
   runQualityGate,
@@ -303,6 +306,31 @@ export class BmadOrchestrator {
 
       if (workflow.id === 'editorial-review') {
         return await this.executeEditorialReview(workflow);
+      }
+
+      // Brainstorming workflow
+      if (workflow.id === 'brainstorming') {
+        return await this.executeBrainstorming(workflow);
+      }
+
+      // Research workflows
+      if (workflow.id.includes('research')) {
+        return await this.executeResearch(workflow);
+      }
+
+      // Sprint status workflow
+      if (workflow.id === 'sprint-status') {
+        return await this.executeSprintStatus(workflow);
+      }
+
+      // Correct course workflow
+      if (workflow.id === 'correct-course') {
+        return await this.executeCorrectCourse(workflow);
+      }
+
+      // Check implementation readiness workflow
+      if (workflow.id === 'check-implementation-readiness') {
+        return await this.executeCheckReadiness(workflow);
       }
 
       const parsedWorkflow = await parseWorkflow(
@@ -1139,6 +1167,601 @@ ${structureResult.suggestedOutline.map((s, i) => `${i + 1}. ${s}`).join('\n')}
   }
 
   /**
+   * Execute Brainstorming workflow
+   */
+  private async executeBrainstorming(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      console.log('');
+      console.log('╔' + '═'.repeat(58) + '╗');
+      console.log('║ 🧠 BEYİN FIRTINASI'.padEnd(59) + '║');
+      console.log('║ ' + 'Çoklu tekniklerle fikir üretimi'.padEnd(57) + '║');
+      console.log('╚' + '═'.repeat(58) + '╝');
+
+      const techniques = [
+        { name: 'SCAMPER', description: 'Substitute, Combine, Adapt, Modify, Put to other uses, Eliminate, Reverse' },
+        { name: 'Mind Mapping', description: 'Merkezi fikirden dallanan görsel harita' },
+        { name: 'Six Thinking Hats', description: 'Beyaz (veriler), Kırmızı (duygular), Siyah (riskler), Sarı (faydalar), Yeşil (yaratıcılık), Mavi (süreç)' },
+        { name: 'SWOT Analysis', description: 'Güçlü yönler, Zayıf yönler, Fırsatlar, Tehditler' },
+        { name: 'How Might We', description: 'Nasıl yapabiliriz soruları' },
+        { name: 'Reverse Brainstorming', description: 'Problemi nasıl daha kötü yapabiliriz?' },
+      ];
+
+      let output = `# Beyin Fırtınası Oturumu\n\n**Fikir:** ${this.config.idea}\n\n`;
+
+      for (const technique of techniques) {
+        console.log(`\n🔄 ${technique.name} tekniği uygulanıyor...`);
+
+        const systemPrompt = `Sen yaratıcı bir beyin fırtınası uzmanısın.
+${technique.name} tekniğini kullanarak fikir üret.
+Teknik açıklaması: ${technique.description}`;
+
+        const prompt = `Fikir: ${this.config.idea}
+
+${technique.name} tekniğini kullanarak bu fikri analiz et ve geliştir.
+- Her adımı detaylı açıkla
+- Somut öneriler sun
+- Yenilikçi bakış açıları getir`;
+
+        const stream = this.config.adapter.stream(prompt, {
+          maxTokens: 2048,
+          systemPrompt,
+        });
+
+        let techniqueOutput = '';
+        for await (const chunk of stream) {
+          process.stdout.write(chunk);
+          techniqueOutput += chunk;
+        }
+        console.log('');
+
+        output += `## ${technique.name}\n\n${techniqueOutput}\n\n---\n\n`;
+      }
+
+      // Synthesize all techniques
+      console.log('\n📊 Tüm teknikler sentezleniyor...');
+
+      const synthesisPrompt = `Beyin fırtınası sonuçları:\n${output}\n\nBu sonuçları sentezle:
+1. En güçlü fikirler
+2. Ortak temalar
+3. Öncelikli aksiyon önerileri
+4. Risk/fırsat matrisi`;
+
+      const synthesisStream = this.config.adapter.stream(synthesisPrompt, {
+        maxTokens: 2048,
+        systemPrompt: 'Sen bir strateji danışmanısın. Beyin fırtınası sonuçlarını sentezle.',
+      });
+
+      let synthesis = '';
+      for await (const chunk of synthesisStream) {
+        process.stdout.write(chunk);
+        synthesis += chunk;
+      }
+      console.log('');
+
+      output += `## Sentez ve Öncelikler\n\n${synthesis}`;
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      this.workflowScores.set(workflow.id, 75);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı! (${techniques.length} teknik uygulandı)`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Brainstorming hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Research workflow (market, domain, technical)
+   */
+  private async executeResearch(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      // Determine research type from workflow id
+      let researchType = 'general';
+      let researchEmoji = '🔍';
+      let researchAreas: string[] = [];
+
+      if (workflow.id.includes('market')) {
+        researchType = 'Pazar Araştırması';
+        researchEmoji = '📈';
+        researchAreas = [
+          'Pazar büyüklüğü ve trendler',
+          'Hedef müşteri segmentleri',
+          'Rekabet analizi',
+          'Fiyatlandırma stratejileri',
+          'Dağıtım kanalları',
+          'Giriş engelleri',
+        ];
+      } else if (workflow.id.includes('domain')) {
+        researchType = 'Alan Araştırması';
+        researchEmoji = '🏭';
+        researchAreas = [
+          'Sektör dinamikleri',
+          'Düzenleyici çerçeve',
+          'Endüstri standartları',
+          'Best practice\'ler',
+          'Teknoloji trendleri',
+          'Paydaş analizi',
+        ];
+      } else if (workflow.id.includes('technical')) {
+        researchType = 'Teknik Araştırma';
+        researchEmoji = '⚙️';
+        researchAreas = [
+          'Teknoloji seçenekleri',
+          'Mimari pattern\'ler',
+          'Entegrasyon gereksinimleri',
+          'Performans kriterleri',
+          'Güvenlik gereksinimleri',
+          'Ölçeklenebilirlik',
+        ];
+      }
+
+      console.log('');
+      console.log('╔' + '═'.repeat(58) + '╗');
+      console.log(`║ ${researchEmoji} ${researchType.toUpperCase()}`.padEnd(59) + '║');
+      console.log('╚' + '═'.repeat(58) + '╝');
+
+      let output = `# ${researchType}\n\n**Konu:** ${this.config.idea}\n\n`;
+
+      for (const area of researchAreas) {
+        console.log(`\n🔎 ${area} araştırılıyor...`);
+
+        const systemPrompt = `Sen deneyimli bir ${researchType.toLowerCase()} uzmanısın.
+${area} konusunda derinlemesine analiz yap.
+Somut veriler, örnekler ve referanslar kullan.`;
+
+        const prompt = `Konu: ${this.config.idea}
+
+"${area}" hakkında detaylı araştırma yap:
+- Mevcut durum analizi
+- Önemli bulgular
+- Fırsatlar ve riskler
+- Öneriler`;
+
+        const stream = this.config.adapter.stream(prompt, {
+          maxTokens: 1536,
+          systemPrompt,
+        });
+
+        let areaOutput = '';
+        for await (const chunk of stream) {
+          process.stdout.write(chunk);
+          areaOutput += chunk;
+        }
+        console.log('');
+
+        output += `## ${area}\n\n${areaOutput}\n\n---\n\n`;
+      }
+
+      // Generate executive summary
+      console.log('\n📋 Yönetici özeti oluşturuluyor...');
+
+      const summaryPrompt = `Araştırma sonuçları:\n${output.slice(0, 4000)}\n\n
+Yönetici özeti oluştur:
+1. Ana bulgular (3-5 madde)
+2. Kritik başarı faktörleri
+3. Önerilen aksiyon planı
+4. Sonraki adımlar`;
+
+      const summaryStream = this.config.adapter.stream(summaryPrompt, {
+        maxTokens: 1024,
+        systemPrompt: 'Sen bir strateji danışmanısın. Araştırma bulgularını özetle.',
+      });
+
+      let summary = '';
+      for await (const chunk of summaryStream) {
+        process.stdout.write(chunk);
+        summary += chunk;
+      }
+      console.log('');
+
+      output += `## Yönetici Özeti\n\n${summary}`;
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      this.workflowScores.set(workflow.id, 70);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı! (${researchAreas.length} alan araştırıldı)`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Research hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Sprint Status workflow
+   */
+  private async executeSprintStatus(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      console.log('');
+      console.log('╔' + '═'.repeat(58) + '╗');
+      console.log('║ 📊 SPRINT DURUMU'.padEnd(59) + '║');
+      console.log('╚' + '═'.repeat(58) + '╝');
+
+      // Check if sprint-status.yaml exists
+      const sprintStatusPath = join(this.config.projectPath, 'docs', 'sprint-status.yaml');
+      let existingStatus = '';
+
+      if (existsSync(sprintStatusPath)) {
+        existingStatus = await readFile(sprintStatusPath, 'utf-8');
+        console.log('\n📄 Mevcut sprint durumu bulundu.');
+      }
+
+      // Get epic/story info from previous outputs
+      const epicsContent = this.workflowOutputs.get('create-epics-stories') ||
+                          this.workflowOutputs.get('create-epics-and-stories') || '';
+
+      const systemPrompt = `Sen bir Scrum Master'sın.
+Sprint durumunu analiz et ve raporla.
+Risk ve engelleri belirle, öneriler sun.`;
+
+      const prompt = `Proje: ${this.config.idea}
+
+Mevcut Sprint Durumu:
+${existingStatus || 'Henüz sprint durumu yok.'}
+
+Epic/Story Bilgisi:
+${epicsContent.slice(0, 2000)}
+
+Sprint durumu raporu oluştur:
+1. **Sprint Özeti**
+   - Sprint hedefi
+   - Başlangıç/Bitiş tarihleri
+   - Tamamlanma oranı
+
+2. **Story Durumları**
+   - Tamamlanan
+   - Devam eden
+   - Bekleyen
+   - Engellenen
+
+3. **Riskler ve Engeller**
+   - Mevcut engeller
+   - Potansiyel riskler
+   - Etki analizi
+
+4. **Öneriler**
+   - Hız artırma önerileri
+   - Kaynak optimizasyonu
+   - Sonraki sprint için notlar
+
+YAML formatında sprint-status dosyası da üret.`;
+
+      const stream = this.config.adapter.stream(prompt, {
+        maxTokens: 2048,
+        systemPrompt,
+      });
+
+      let output = '';
+      for await (const chunk of stream) {
+        process.stdout.write(chunk);
+        output += chunk;
+      }
+      console.log('');
+
+      // Extract YAML and save
+      const yamlMatch = output.match(/```yaml\n([\s\S]*?)\n```/);
+      if (yamlMatch) {
+        await writeFile(sprintStatusPath, yamlMatch[1], 'utf-8');
+        console.log('\n📄 Sprint durumu kaydedildi: docs/sprint-status.yaml');
+      }
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      this.workflowScores.set(workflow.id, 70);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Sprint status hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Correct Course workflow
+   */
+  private async executeCorrectCourse(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      console.log('');
+      console.log('╔' + '═'.repeat(58) + '╗');
+      console.log('║ 🔄 ROTA DÜZELTME'.padEnd(59) + '║');
+      console.log('║ ' + 'Sprint sırasında değişiklik yönetimi'.padEnd(57) + '║');
+      console.log('╚' + '═'.repeat(58) + '╝');
+
+      // Get change description in interactive mode
+      let changeDescription = '';
+      if (this.config.mode === 'interactive') {
+        const change = await p.text({
+          message: 'Hangi değişiklik gerekiyor? (Yeni gereksinim, engel, öncelik değişikliği vb.)',
+          placeholder: 'Değişikliği açıklayın...',
+        });
+
+        if (p.isCancel(change)) {
+          return false;
+        }
+        changeDescription = change as string;
+      } else {
+        changeDescription = 'Sprint sırasında ortaya çıkan değişiklikleri analiz et.';
+      }
+
+      const systemPrompt = `Sen deneyimli bir Scrum Master ve değişiklik yönetimi uzmanısın.
+Sprint sırasında ortaya çıkan değişiklikleri analiz et.
+Etki değerlendirmesi yap ve çözüm öner.`;
+
+      const prdContent = this.workflowOutputs.get('create-prd')?.slice(0, 1500) || '';
+      const archContent = this.workflowOutputs.get('create-architecture')?.slice(0, 1500) || '';
+
+      const prompt = `Proje: ${this.config.idea}
+
+Değişiklik Talebi:
+${changeDescription}
+
+Mevcut PRD Özeti:
+${prdContent}
+
+Mevcut Mimari Özeti:
+${archContent}
+
+Analiz et:
+1. **Etki Analizi**
+   - PRD üzerindeki etki
+   - Mimari üzerindeki etki
+   - Sprint planı üzerindeki etki
+   - Kaynak gereksinimleri
+
+2. **Risk Değerlendirmesi**
+   - Teknik riskler
+   - Zaman riskleri
+   - Kalite riskleri
+
+3. **Çözüm Önerileri**
+   - Seçenek A: [Değişikliği kabul et]
+   - Seçenek B: [Değişikliği ertele]
+   - Seçenek C: [Alternatif çözüm]
+
+4. **Uygulama Planı**
+   - Gerekli güncellemeler
+   - Etkilenen story'ler
+   - Tahmini ek efor
+
+5. **Karar Önerisi**
+   - Önerilen aksiyon
+   - Gerekçe`;
+
+      const stream = this.config.adapter.stream(prompt, {
+        maxTokens: 2048,
+        systemPrompt,
+      });
+
+      let output = `# Rota Düzeltme Raporu\n\n**Değişiklik:** ${changeDescription}\n\n`;
+      for await (const chunk of stream) {
+        process.stdout.write(chunk);
+        output += chunk;
+      }
+      console.log('');
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      this.workflowScores.set(workflow.id, 70);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Correct course hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Check Implementation Readiness workflow
+   */
+  private async executeCheckReadiness(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      console.log('');
+      console.log('╔' + '═'.repeat(58) + '╗');
+      console.log('║ ✅ UYGULAMA HAZIRLIĞI KONTROLÜ'.padEnd(59) + '║');
+      console.log('║ ' + 'PRD, UX, Mimari uyum ve eksiklik analizi'.padEnd(57) + '║');
+      console.log('╚' + '═'.repeat(58) + '╝');
+
+      const prdContent = this.workflowOutputs.get('create-prd') || '';
+      const uxContent = this.workflowOutputs.get('create-ux-design') || '';
+      const archContent = this.workflowOutputs.get('create-architecture') || '';
+      const epicsContent = this.workflowOutputs.get('create-epics-stories') ||
+                          this.workflowOutputs.get('create-epics-and-stories') || '';
+
+      const checks: { name: string; status: 'pass' | 'warn' | 'fail'; issues: string[] }[] = [];
+
+      // Check PRD completeness
+      console.log('\n📋 PRD kontrol ediliyor...');
+      const prdCheck = await this.checkDocument('PRD', prdContent, [
+        'Problem tanımı',
+        'Hedef kullanıcılar',
+        'Fonksiyonel gereksinimler',
+        'Non-fonksiyonel gereksinimler',
+        'Kabul kriterleri',
+        'Başarı metrikleri',
+      ]);
+      checks.push(prdCheck);
+
+      // Check UX completeness
+      console.log('\n🎨 UX tasarımı kontrol ediliyor...');
+      const uxCheck = await this.checkDocument('UX', uxContent, [
+        'Kullanıcı akışları',
+        'Wireframe\'ler',
+        'UI bileşenleri',
+        'Erişilebilirlik',
+        'Responsive tasarım',
+      ]);
+      checks.push(uxCheck);
+
+      // Check Architecture completeness
+      console.log('\n🏗️ Mimari kontrol ediliyor...');
+      const archCheck = await this.checkDocument('Mimari', archContent, [
+        'Sistem mimarisi',
+        'Veri modeli',
+        'API tasarımı',
+        'Güvenlik',
+        'Performans',
+        'Ölçeklenebilirlik',
+      ]);
+      checks.push(archCheck);
+
+      // Check Epics/Stories completeness
+      console.log('\n📚 Epic/Story kontrol ediliyor...');
+      const epicsCheck = await this.checkDocument('Epic/Stories', epicsContent, [
+        'Epic tanımları',
+        'User story\'ler',
+        'Kabul kriterleri',
+        'Story point tahminleri',
+        'Bağımlılıklar',
+      ]);
+      checks.push(epicsCheck);
+
+      // Cross-document alignment check
+      console.log('\n🔗 Dokümanlar arası uyum kontrol ediliyor...');
+      const alignmentResult = await this.checkAlignment(prdContent, uxContent, archContent, epicsContent);
+
+      const allPassed = checks.every(c => c.status === 'pass') && alignmentResult.aligned;
+      const totalIssues = checks.reduce((sum, c) => sum + c.issues.length, 0) + alignmentResult.issues.length;
+
+      const output = `# Uygulama Hazırlığı Raporu
+
+## Genel Durum
+- **Hazır mı:** ${allPassed ? '✅ Evet' : '❌ Hayır'}
+- **Toplam sorun:** ${totalIssues}
+
+## Doküman Kontrolleri
+
+| Doküman | Durum | Sorun Sayısı |
+|---------|-------|--------------|
+${checks.map(c => `| ${c.name} | ${c.status === 'pass' ? '✅' : c.status === 'warn' ? '⚠️' : '❌'} | ${c.issues.length} |`).join('\n')}
+
+## Detaylı Bulgular
+
+${checks.map(c => `### ${c.name} ${c.status === 'pass' ? '✅' : c.status === 'warn' ? '⚠️' : '❌'}
+
+${c.issues.length > 0 ? c.issues.map(i => `- ${i}`).join('\n') : 'Sorun bulunamadı.'}
+`).join('\n')}
+
+### Dokümanlar Arası Uyum ${alignmentResult.aligned ? '✅' : '❌'}
+
+${alignmentResult.issues.length > 0 ? alignmentResult.issues.map(i => `- ${i}`).join('\n') : 'Tüm dokümanlar uyumlu.'}
+
+## Sonuç
+
+${allPassed
+  ? '✅ **Proje implementasyona hazır!** Tüm dokümanlar tamamlanmış ve uyumlu.'
+  : `⚠️ **Dikkat gerekiyor!** ${totalIssues} sorun çözülmeli.
+
+### Öncelikli Aksiyonlar
+${checks.filter(c => c.status !== 'pass').map(c => `1. ${c.name} dokümanını gözden geçir`).join('\n')}
+${alignmentResult.issues.length > 0 ? '2. Dokümanlar arası tutarsızlıkları gider' : ''}
+`}
+`;
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      this.workflowScores.set(workflow.id, allPassed ? 85 : 50);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı! (${allPassed ? 'Hazır' : `${totalIssues} sorun bulundu`})`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Check readiness hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Helper: Check document completeness
+   */
+  private async checkDocument(
+    name: string,
+    content: string,
+    requiredSections: string[]
+  ): Promise<{ name: string; status: 'pass' | 'warn' | 'fail'; issues: string[] }> {
+    const issues: string[] = [];
+
+    if (!content || content.length < 100) {
+      return { name, status: 'fail', issues: [`${name} dokümanı bulunamadı veya çok kısa.`] };
+    }
+
+    const contentLower = content.toLowerCase();
+    for (const section of requiredSections) {
+      const sectionLower = section.toLowerCase();
+      // Check for Turkish or English equivalents
+      const found = contentLower.includes(sectionLower) ||
+                   contentLower.includes(section.replace(/[ıİ]/g, 'i').toLowerCase());
+
+      if (!found) {
+        issues.push(`"${section}" bölümü eksik veya yetersiz.`);
+      }
+    }
+
+    const missingPercent = issues.length / requiredSections.length;
+    const status = missingPercent === 0 ? 'pass' : missingPercent < 0.3 ? 'warn' : 'fail';
+
+    return { name, status, issues };
+  }
+
+  /**
+   * Helper: Check cross-document alignment
+   */
+  private async checkAlignment(
+    prd: string,
+    ux: string,
+    arch: string,
+    epics: string
+  ): Promise<{ aligned: boolean; issues: string[] }> {
+    const issues: string[] = [];
+
+    // Simple alignment checks
+    if (prd && arch) {
+      // Check if architecture mentions key PRD features
+      const prdFeatures = prd.match(/özellik|feature|gereksinim|requirement/gi)?.length || 0;
+      const archMentions = arch.match(/özellik|feature|gereksinim|requirement/gi)?.length || 0;
+
+      if (prdFeatures > 0 && archMentions < prdFeatures * 0.3) {
+        issues.push('Mimari dokümanı PRD gereksinimlerini yeterince karşılamıyor olabilir.');
+      }
+    }
+
+    if (prd && epics) {
+      // Check if epics cover PRD requirements
+      const prdReqs = prd.match(/\d\.\s*[^\n]+/g)?.length || 0;
+      const epicStories = epics.match(/story|hikaye|epic/gi)?.length || 0;
+
+      if (prdReqs > 0 && epicStories < prdReqs * 0.5) {
+        issues.push('Epic/Story\'ler PRD gereksinimlerini tam olarak kapsamıyor olabilir.');
+      }
+    }
+
+    if (ux && epics) {
+      // Check if epics mention UI components
+      const uxComponents = ux.match(/button|form|modal|page|ekran|sayfa/gi)?.length || 0;
+      const epicUIRefs = epics.match(/UI|arayüz|interface|ekran/gi)?.length || 0;
+
+      if (uxComponents > 5 && epicUIRefs < 3) {
+        issues.push('Epic/Story\'ler UX bileşenlerine yeterli referans vermiyor olabilir.');
+      }
+    }
+
+    return { aligned: issues.length === 0, issues };
+  }
+
+  /**
    * Save checkpoint for workflow progress
    */
   private async saveCheckpoint(
@@ -1194,6 +1817,76 @@ ${structureResult.suggestedOutline.map((s, i) => `${i + 1}. ${s}`).join('\n')}
   }
 
   /**
+   * Get list of existing checkpoint files
+   */
+  private async getExistingCheckpoints(): Promise<string[]> {
+    const checkpointsDir = join(this.config.projectPath, '.appfabrika', 'checkpoints');
+
+    if (!existsSync(checkpointsDir)) {
+      return [];
+    }
+
+    try {
+      const { readdir } = await import('node:fs/promises');
+      const files = await readdir(checkpointsDir);
+      return files.filter(f => f.endsWith('.json'));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Load all checkpoints and restore state
+   */
+  private async loadAllCheckpoints(): Promise<void> {
+    const checkpointFiles = await this.getExistingCheckpoints();
+
+    for (const file of checkpointFiles) {
+      const workflowId = file.replace('.json', '');
+      const checkpoint = await this.loadCheckpoint(workflowId);
+
+      if (checkpoint && checkpoint.content) {
+        this.completedWorkflows.add(workflowId);
+        this.workflowOutputs.set(workflowId, checkpoint.content);
+      }
+    }
+  }
+
+  /**
+   * Load completed workflows from docs folder
+   */
+  private async loadCompletedWorkflowsFromDocs(): Promise<void> {
+    const docsDir = join(this.config.projectPath, 'docs');
+
+    if (!existsSync(docsDir)) {
+      return;
+    }
+
+    try {
+      const { readdir } = await import('node:fs/promises');
+      const files = await readdir(docsDir);
+      const mdFiles = files.filter(f => f.endsWith('.md') && f !== 'bmad-report.md');
+
+      for (const file of mdFiles) {
+        const workflowId = file.replace('.md', '');
+        const filePath = join(docsDir, file);
+        const content = await readFile(filePath, 'utf-8');
+
+        if (content.length > 100) {
+          this.completedWorkflows.add(workflowId);
+          this.workflowOutputs.set(workflowId, content);
+        }
+      }
+
+      if (this.completedWorkflows.size > 0) {
+        p.log.info(`📂 ${this.completedWorkflows.size} tamamlanmış workflow bulundu ve yüklendi.`);
+      }
+    } catch {
+      // Ignore errors
+    }
+  }
+
+  /**
    * Save workflow output to docs folder
    */
   private async saveWorkflowOutput(
@@ -1236,6 +1929,45 @@ generatedAt: ${new Date().toISOString()}
     console.log('🏭 BMAD Full Workflow başlatılıyor...');
     console.log(`📁 Proje: ${this.config.projectName}`);
     console.log(`💡 Fikir: ${this.config.idea}`);
+
+    // Check for existing checkpoints and offer resume
+    const checkpointsDir = join(this.config.projectPath, '.appfabrika', 'checkpoints');
+    if (existsSync(checkpointsDir) && this.config.mode === 'interactive') {
+      const checkpointFiles = await this.getExistingCheckpoints();
+
+      if (checkpointFiles.length > 0) {
+        console.log('');
+        p.log.info(`📂 ${checkpointFiles.length} tamamlanmamış workflow bulundu.`);
+
+        const resumeChoice = await p.select({
+          message: 'Ne yapmak istersin?',
+          options: [
+            { value: 'resume', label: '🔄 Kaldığı yerden devam et', hint: 'Önceki ilerlemeyi yükle' },
+            { value: 'fresh', label: '🆕 Baştan başla', hint: 'Önceki ilerlemeyi sil' },
+            { value: 'keep', label: '➡️ Devam et (ilerlemeyi koru)', hint: 'Tamamlananları atla' },
+          ],
+        });
+
+        if (!p.isCancel(resumeChoice)) {
+          if (resumeChoice === 'resume') {
+            await this.loadAllCheckpoints();
+            console.log('');
+            p.log.success(`✅ ${this.completedWorkflows.size} workflow yüklendi.`);
+          } else if (resumeChoice === 'fresh') {
+            // Clear checkpoints
+            for (const file of checkpointFiles) {
+              const filePath = join(checkpointsDir, file);
+              if (existsSync(filePath)) {
+                await writeFile(filePath, '', 'utf-8'); // Clear file
+              }
+            }
+            p.log.info('🗑️ Önceki ilerleme silindi.');
+          } else if (resumeChoice === 'keep') {
+            await this.loadCompletedWorkflowsFromDocs();
+          }
+        }
+      }
+    }
 
     // Select workflows
     const selectedWorkflows = await this.selectWorkflows();
@@ -1444,4 +2176,183 @@ export async function runBmadWorkflow(
 
   const result = await orchestrator.run();
   return result.success;
+}
+
+/**
+ * Run BMAD help system
+ */
+export async function runBmadHelp(
+  topic: string,
+  adapter: AnthropicAdapter
+): Promise<void> {
+  console.log('');
+  console.log('╔' + '═'.repeat(58) + '╗');
+  console.log('║ ❓ BMAD YARDIM SİSTEMİ'.padEnd(59) + '║');
+  console.log('╚' + '═'.repeat(58) + '╝');
+  console.log('');
+
+  const helpResult = await getHelp(topic, adapter, true);
+
+  console.log('');
+  console.log('─'.repeat(60));
+  console.log('');
+  console.log(helpResult);
+}
+
+/**
+ * Run index docs tool
+ */
+export async function runIndexDocs(
+  projectPath: string,
+  adapter: AnthropicAdapter
+): Promise<void> {
+  const docsDir = join(projectPath, 'docs');
+
+  console.log('');
+  console.log('╔' + '═'.repeat(58) + '╗');
+  console.log('║ 📚 DOKÜMAN İNDEKSLEME'.padEnd(59) + '║');
+  console.log('╚' + '═'.repeat(58) + '╝');
+  console.log('');
+
+  if (!existsSync(docsDir)) {
+    p.log.error('docs/ klasörü bulunamadı.');
+    return;
+  }
+
+  const result = await indexDocs(docsDir, adapter, true);
+
+  // Save index
+  const indexPath = join(docsDir, 'index.md');
+  await writeFile(indexPath, result, 'utf-8');
+
+  console.log('');
+  p.log.success('✅ İndeks oluşturuldu: docs/index.md');
+}
+
+/**
+ * Run shard doc tool
+ */
+export async function runShardDoc(
+  filePath: string,
+  adapter: AnthropicAdapter
+): Promise<void> {
+  console.log('');
+  console.log('╔' + '═'.repeat(58) + '╗');
+  console.log('║ ✂️ DOKÜMAN PARÇALAMA'.padEnd(59) + '║');
+  console.log('╚' + '═'.repeat(58) + '╝');
+  console.log('');
+
+  if (!existsSync(filePath)) {
+    p.log.error(`Dosya bulunamadı: ${filePath}`);
+    return;
+  }
+
+  const content = await readFile(filePath, 'utf-8');
+  const result = await shardDoc(content, adapter, true);
+
+  // Save shards
+  const dir = join(filePath, '..', 'shards');
+  await mkdir(dir, { recursive: true });
+
+  for (const shard of result.shards) {
+    const shardPath = join(dir, `${shard.id}.md`);
+    await writeFile(shardPath, `# ${shard.title}\n\n${shard.content}`, 'utf-8');
+  }
+
+  console.log('');
+  p.log.success(`✅ ${result.shards.length} parça oluşturuldu: ${dir}/`);
+}
+
+/**
+ * Run a single workflow by ID
+ */
+export async function runSingleWorkflow(
+  workflowId: string,
+  projectPath: string,
+  projectName: string,
+  idea: string,
+  adapter: AnthropicAdapter,
+  mode: 'interactive' | 'auto' = 'interactive'
+): Promise<boolean> {
+  // Find the workflow
+  const workflow = BMAD_PHASES.flatMap(p => p.workflows).find(w => w.id === workflowId);
+
+  if (!workflow) {
+    p.log.error(`Workflow bulunamadı: ${workflowId}`);
+    console.log('');
+    console.log('Mevcut workflow\'lar:');
+    for (const phase of BMAD_PHASES) {
+      console.log(`\n${phase.emoji} ${phase.name}:`);
+      for (const w of phase.workflows) {
+        console.log(`  - ${w.id}: ${w.name}`);
+      }
+    }
+    return false;
+  }
+
+  // Find BMAD root
+  const bmadRoot = await findBmadRoot(projectPath) || join(
+    process.env.HOME || '',
+    'Desktop',
+    'urun-fab',
+    '_bmad'
+  );
+
+  if (!existsSync(bmadRoot)) {
+    p.log.error('BMAD dosyaları bulunamadı.');
+    return false;
+  }
+
+  console.log('');
+  console.log('╔' + '═'.repeat(58) + '╗');
+  console.log(`║ 🎯 TEK WORKFLOW: ${workflow.name}`.padEnd(59) + '║');
+  console.log('╚' + '═'.repeat(58) + '╝');
+
+  const orchestrator = new BmadOrchestrator({
+    bmadRoot,
+    projectPath,
+    projectName,
+    idea,
+    adapter,
+    mode,
+    selectionMode: 'full',
+  });
+
+  // Load existing outputs for context
+  await orchestrator['loadCompletedWorkflowsFromDocs']();
+
+  // Execute the single workflow
+  const success = await orchestrator['executeWorkflow'](workflow);
+
+  return success;
+}
+
+/**
+ * List all available workflows
+ */
+export function listWorkflows(): void {
+  console.log('');
+  console.log('╔══════════════════════════════════════════════════════════════╗');
+  console.log('║                📋 BMAD WORKFLOW\'LAR                          ║');
+  console.log('╠══════════════════════════════════════════════════════════════╣');
+
+  for (const phase of BMAD_PHASES) {
+    console.log(`║ ${phase.emoji} ${phase.name.toUpperCase()}`.padEnd(63) + '║');
+    console.log('╟──────────────────────────────────────────────────────────────╢');
+
+    for (const workflow of phase.workflows) {
+      const req = workflow.required ? '⚠️' : '  ';
+      console.log(`║ ${req} ${workflow.id.padEnd(30)} ${workflow.agentEmoji} ${workflow.agent.padEnd(10)}`.padEnd(60) + '║');
+    }
+    console.log('╟──────────────────────────────────────────────────────────────╢');
+  }
+
+  const total = BMAD_PHASES.reduce((t, p) => t + p.workflows.length, 0);
+  const required = BMAD_PHASES.reduce(
+    (t, p) => t + p.workflows.filter(w => w.required).length,
+    0
+  );
+
+  console.log(`║ Toplam: ${total} workflow (${required} zorunlu)`.padEnd(63) + '║');
+  console.log('╚══════════════════════════════════════════════════════════════╝');
 }
