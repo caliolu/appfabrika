@@ -760,20 +760,62 @@ export async function runInteractiveStep(
   console.log('');
   p.log.info('📊 Seçenekleri keşfediyorum...');
 
-  const exploreResponse = await streamResponse(
+  let exploreResponse = await streamResponse(
     adapter,
     prompts.explore(idea, context),
     systemPrompt
   );
 
-  // Phase 2: User selection
-  const selection = await p.text({
-    message: 'Hangi yaklaşımı/seçeneği tercih ediyorsun? (A/B/C veya kendi fikrin)',
-    placeholder: 'A, B, C veya kendi cümleni yaz...',
-  });
+  // Phase 2: User selection (with "more options" loop)
+  let selection: string | symbol = '';
+  let optionRound = 1;
 
-  if (p.isCancel(selection)) {
-    return { approved: false, finalOutput: '', iterations: 0 };
+  while (true) {
+    const userChoice = await p.select({
+      message: 'Ne yapmak istersin?',
+      options: [
+        { value: 'select', label: '✅ Bir seçenek seç (A/B/C veya kendi fikrin)' },
+        { value: 'more', label: '➕ Daha fazla seçenek göster' },
+        { value: 'skip', label: '⏭️ Bu adımı atla' },
+      ],
+    });
+
+    if (p.isCancel(userChoice)) {
+      return { approved: false, finalOutput: '', iterations: 0 };
+    }
+
+    if (userChoice === 'skip') {
+      return { approved: false, finalOutput: 'Atlandı', iterations: 0 };
+    }
+
+    if (userChoice === 'more') {
+      optionRound++;
+      console.log('');
+      p.log.info(`➕ ${optionRound * 3} alternatif daha üretiyorum...`);
+
+      const morePrompt = `Daha önce şu seçenekleri sundun:
+${exploreResponse}
+
+Şimdi 3 FARKLI ve YENİ alternatif daha öner (D, E, F olarak adlandır).
+Öncekilerden tamamen farklı yaklaşımlar olsun.
+Aynı formatta yaz. Türkçe yanıt ver.`;
+
+      const moreOptions = await streamResponse(adapter, morePrompt, systemPrompt);
+      exploreResponse += '\n\n' + moreOptions;
+      continue;
+    }
+
+    // User wants to select
+    selection = await p.text({
+      message: 'Hangi seçeneği tercih ediyorsun?',
+      placeholder: 'A, B, C, D... veya kendi cümleni yaz...',
+    });
+
+    if (p.isCancel(selection)) {
+      return { approved: false, finalOutput: '', iterations: 0 };
+    }
+
+    break;
   }
 
   // Phase 3: Deep dive
