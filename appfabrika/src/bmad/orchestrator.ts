@@ -25,6 +25,16 @@ import {
   documentProject,
   type DiagramType,
 } from './features.js';
+import {
+  generateProjectScaffolding,
+  calculatePRDQuality,
+  calculateArchitectureQuality,
+  runAdversarialReview,
+  editorialReviewProse,
+  editorialReviewStructure,
+  quickSpec,
+  quickDev,
+} from './advanced-features.js';
 
 /**
  * Workflow selection mode
@@ -224,6 +234,30 @@ export class BmadOrchestrator {
 
       if (workflow.id === 'document-project') {
         return await this.executeDocumentProject(workflow);
+      }
+
+      if (workflow.id === 'code-scaffolding') {
+        return await this.executeCodeScaffolding(workflow);
+      }
+
+      if (workflow.id === 'adversarial-review') {
+        return await this.executeAdversarialReview(workflow);
+      }
+
+      if (workflow.id === 'quality-validation') {
+        return await this.executeQualityValidation(workflow);
+      }
+
+      if (workflow.id === 'quick-spec') {
+        return await this.executeQuickSpec(workflow);
+      }
+
+      if (workflow.id === 'quick-dev') {
+        return await this.executeQuickDev(workflow);
+      }
+
+      if (workflow.id === 'editorial-review') {
+        return await this.executeEditorialReview(workflow);
       }
 
       const parsedWorkflow = await parseWorkflow(
@@ -510,6 +544,294 @@ ${analysis.recommendations.map(r => `- ${r}`).join('\n')}
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       p.log.error(`Dokümantasyon hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Code Scaffolding workflow
+   */
+  private async executeCodeScaffolding(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      console.log('');
+      console.log('╔' + '═'.repeat(58) + '╗');
+      console.log('║ 🏗️ KOD SCAFFOLDING'.padEnd(59) + '║');
+      console.log('╚' + '═'.repeat(58) + '╝');
+
+      // Get architecture info from previous outputs
+      const archOutput = this.workflowOutputs.get('create-architecture') || '';
+      const prdOutput = this.workflowOutputs.get('create-prd') || '';
+
+      // Extract tech stack from architecture
+      const techStackMatch = archOutput.match(/teknoloji|stack|framework/gi);
+      const techStack = techStackMatch ? ['TypeScript', 'Node.js', 'React'] : ['TypeScript', 'Node.js'];
+
+      const result = await generateProjectScaffolding(
+        {
+          projectName: this.config.projectName,
+          architecture: archOutput.slice(0, 2000) || 'Standard web application',
+          techStack,
+          features: [this.config.idea],
+          outputPath: this.config.projectPath,
+        },
+        this.config.adapter,
+        true
+      );
+
+      // Save generated files info
+      const output = `# Kod Scaffolding
+
+## Oluşturulan Dosyalar
+${result.files.map(f => `- \`${f.path}\`: ${f.description}`).join('\n')}
+
+## Kurulum Talimatları
+${result.instructions}
+
+---
+📁 Toplam ${result.files.length} dosya planlandı
+`;
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Scaffolding hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Adversarial Review workflow
+   */
+  private async executeAdversarialReview(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      console.log('');
+      console.log('╔' + '═'.repeat(58) + '╗');
+      console.log('║ ⚔️ ADVERSARIAL REVIEW'.padEnd(59) + '║');
+      console.log('║ ' + 'Tüm dokümanları agresif şekilde eleştir'.padEnd(57) + '║');
+      console.log('╚' + '═'.repeat(58) + '╝');
+
+      const allOutputs = Array.from(this.workflowOutputs.entries())
+        .map(([id, content]) => `## ${id}\n${content.slice(0, 1500)}`)
+        .join('\n\n---\n\n');
+
+      const result = await runAdversarialReview(
+        allOutputs,
+        'general',
+        this.config.adapter,
+        true
+      );
+
+      const output = `# Adversarial Review Raporu
+
+## Özet
+- Toplam bulgu: ${result.findings.length}
+- Kritik: ${result.findings.filter(f => f.severity === 'critical').length}
+- Major: ${result.findings.filter(f => f.severity === 'major').length}
+- Minor: ${result.findings.filter(f => f.severity === 'minor').length}
+- Geçti mi: ${result.passedReview ? '✅ Evet' : '❌ Hayır'}
+
+## Bulgular
+
+${result.findings.map((f, i) => `### ${i + 1}. [${f.severity.toUpperCase()}] ${f.category}
+**Bulgu:** ${f.finding}
+**Etki:** ${f.impact}
+**Öneri:** ${f.recommendation}
+`).join('\n')}
+`;
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı! (${result.findings.length} bulgu)`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Adversarial review hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Quality Validation workflow
+   */
+  private async executeQualityValidation(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      console.log('');
+      console.log('╔' + '═'.repeat(58) + '╗');
+      console.log('║ ✅ KALİTE VALİDASYONU'.padEnd(59) + '║');
+      console.log('╚' + '═'.repeat(58) + '╝');
+
+      const scores: { name: string; score: any }[] = [];
+
+      // PRD Quality
+      const prdContent = this.workflowOutputs.get('create-prd');
+      if (prdContent) {
+        console.log('\n📋 PRD kalitesi değerlendiriliyor...');
+        const prdScore = await calculatePRDQuality(prdContent, this.config.adapter, true);
+        scores.push({ name: 'PRD', score: prdScore });
+      }
+
+      // Architecture Quality
+      const archContent = this.workflowOutputs.get('create-architecture');
+      if (archContent) {
+        console.log('\n🏗️ Mimari kalitesi değerlendiriliyor...');
+        const archScore = await calculateArchitectureQuality(archContent, this.config.adapter, true);
+        scores.push({ name: 'Architecture', score: archScore });
+      }
+
+      const output = `# Kalite Validasyon Raporu
+
+## Genel Skorlar
+
+| Doküman | Skor | Grade |
+|---------|------|-------|
+${scores.map(s => `| ${s.name} | ${s.score.overall}/100 | ${s.score.grade} |`).join('\n')}
+
+## Detaylı Analiz
+
+${scores.map(s => `### ${s.name} (${s.score.overall}/100 - ${s.score.grade})
+
+${s.score.summary}
+
+**Kategoriler:**
+${s.score.categories.map((c: any) => `- ${c.name}: ${c.score}/${c.maxScore}`).join('\n')}
+`).join('\n')}
+
+---
+📊 Ortalama Skor: ${Math.round(scores.reduce((a, s) => a + s.score.overall, 0) / scores.length)}/100
+`;
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Validasyon hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Quick Spec workflow
+   */
+  private async executeQuickSpec(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      const context = {
+        projectName: this.config.projectName,
+        projectPath: this.config.projectPath,
+        idea: this.config.idea,
+        phase: this.currentPhase,
+        workflow: { meta: { name: workflow.name, description: workflow.description, phase: this.currentPhase, order: 0, required: true }, steps: [], currentStepIndex: 0 },
+        state: { workflowId: workflow.id, currentStepIndex: 0, completedSteps: [], outputs: new Map(), startedAt: new Date(), lastUpdatedAt: new Date() },
+        previousOutputs: this.workflowOutputs,
+        userPreferences: new Map(),
+      };
+
+      const output = await quickSpec(this.config.idea, context, this.config.adapter, true);
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Quick spec hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Quick Dev workflow
+   */
+  private async executeQuickDev(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      const context = {
+        projectName: this.config.projectName,
+        projectPath: this.config.projectPath,
+        idea: this.config.idea,
+        phase: this.currentPhase,
+        workflow: { meta: { name: workflow.name, description: workflow.description, phase: this.currentPhase, order: 0, required: true }, steps: [], currentStepIndex: 0 },
+        state: { workflowId: workflow.id, currentStepIndex: 0, completedSteps: [], outputs: new Map(), startedAt: new Date(), lastUpdatedAt: new Date() },
+        previousOutputs: this.workflowOutputs,
+        userPreferences: new Map(),
+      };
+
+      const output = await quickDev(this.config.idea, context, this.config.adapter, true);
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Quick dev hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Editorial Review workflow
+   */
+  private async executeEditorialReview(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      console.log('');
+      console.log('╔' + '═'.repeat(58) + '╗');
+      console.log('║ ✍️ EDITORIAL REVIEW'.padEnd(59) + '║');
+      console.log('╚' + '═'.repeat(58) + '╝');
+
+      const allOutputs = Array.from(this.workflowOutputs.entries())
+        .map(([id, content]) => `## ${id}\n${content.slice(0, 1000)}`)
+        .join('\n\n');
+
+      // Prose review
+      console.log('\n📝 Yazım kalitesi inceleniyor...');
+      const proseResult = await editorialReviewProse(allOutputs, this.config.adapter, true);
+
+      // Structure review
+      console.log('\n📐 Yapı inceleniyor...');
+      const structureResult = await editorialReviewStructure(allOutputs, this.config.adapter, true);
+
+      const output = `# Editorial Review Raporu
+
+## Yazım Kalitesi
+
+### Bulunan Sorunlar
+${proseResult.issues.map(i => `- **${i.type}** (${i.location}): ${i.suggestion}`).join('\n')}
+
+## Yapı Analizi
+
+### Sorunlar
+${structureResult.issues.map(i => `- ${i}`).join('\n')}
+
+### Önerilen Outline
+${structureResult.suggestedOutline.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+
+---
+📊 Toplam ${proseResult.issues.length} yazım + ${structureResult.issues.length} yapı sorunu
+`;
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Editorial review hatası: ${errorMessage}`);
       return false;
     }
   }
