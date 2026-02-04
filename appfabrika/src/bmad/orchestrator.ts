@@ -35,6 +35,16 @@ import {
   quickSpec,
   quickDev,
 } from './advanced-features.js';
+import {
+  runQualityGate,
+  reviewAndFixLoop,
+  generateAndWriteCode,
+  generateAPIFiles,
+  generateTestFiles,
+  canWorkflowProceed,
+  improveUntilPass,
+  type QualityGateResult,
+} from './workflow-engine.js';
 
 /**
  * Workflow selection mode
@@ -71,6 +81,7 @@ export class BmadOrchestrator {
   private config: OrchestratorConfig;
   private completedWorkflows: Set<string> = new Set();
   private workflowOutputs: Map<string, string> = new Map();
+  private workflowScores: Map<string, number> = new Map();
   private currentPhase: BmadPhase = BmadPhase.ANALYSIS;
 
   constructor(config: OrchestratorConfig) {
@@ -222,6 +233,40 @@ export class BmadOrchestrator {
     console.log(`│ Adım sayısı: ${workflow.stepCount}`.padEnd(59) + '│');
     console.log('└' + '─'.repeat(58) + '┘');
 
+    // Check workflow dependencies before starting
+    const dependencyCheck = canWorkflowProceed(
+      workflow.id,
+      this.completedWorkflows,
+      this.workflowScores
+    );
+
+    if (!dependencyCheck.canProceed) {
+      console.log('');
+      p.log.warn(`⚠️ Workflow başlatılamıyor: ${dependencyCheck.reason}`);
+
+      if (dependencyCheck.blockers.length > 0) {
+        console.log('📋 Engelleyen workflow\'lar:');
+        for (const blocker of dependencyCheck.blockers) {
+          console.log(`   - ${blocker}`);
+        }
+      }
+
+      if (this.config.mode === 'interactive') {
+        const forceRun = await p.confirm({
+          message: 'Yine de çalıştırmak ister misin? (önerilmez)',
+          initialValue: false,
+        });
+
+        if (p.isCancel(forceRun) || !forceRun) {
+          return false;
+        }
+        p.log.warn('⚠️ Bağımlılık kontrolü atlanarak devam ediliyor...');
+      } else {
+        p.log.error('Otomatik modda bağımlılık hatası nedeniyle workflow atlanıyor.');
+        return false;
+      }
+    }
+
     try {
       // Handle special workflows (Party Mode, Diagrams, Document Project)
       if (workflow.id.startsWith('party-mode')) {
@@ -367,6 +412,82 @@ export class BmadOrchestrator {
 
       // Save final output to docs folder
       await this.saveWorkflowOutput(workflow.id, workflow.name, finalOutput);
+
+      // Run quality gate for this workflow
+      console.log('');
+      p.log.info('🔍 Kalite kapısı kontrolü yapılıyor...');
+
+      const qualityResult = await runQualityGate(
+        workflow.id,
+        finalOutput,
+        this.config.adapter,
+        true
+      );
+
+      // Store the quality score
+      this.workflowScores.set(workflow.id, qualityResult.result.score);
+
+      // Show quality result
+      if (qualityResult.result.passed) {
+        p.log.success(`✅ Kalite kapısı geçildi! (${qualityResult.result.score}/100 - Min: ${qualityResult.result.minimumRequired})`);
+      } else {
+        p.log.warn(`⚠️ Kalite kapısı geçilemedi (${qualityResult.result.score}/100 - Min: ${qualityResult.result.minimumRequired})`);
+
+        // Show issues
+        if (qualityResult.result.issues.length > 0) {
+          console.log('\n📋 Tespit edilen sorunlar:');
+          for (const issue of qualityResult.result.issues.slice(0, 5)) {
+            console.log(`   - [${issue.severity}] ${issue.message}`);
+          }
+        }
+
+        // In interactive mode, ask if user wants to improve
+        if (!isAutoMode) {
+          const improveNow = await p.confirm({
+            message: 'İçeriği iyileştirmek ister misin?',
+            initialValue: true,
+          });
+
+          if (!p.isCancel(improveNow) && improveNow) {
+            p.log.info('🔄 İçerik iyileştiriliyor...');
+
+            const improveResult = await reviewAndFixLoop(
+              finalOutput,
+              workflow.id.includes('prd') ? 'prd' : workflow.id.includes('arch') ? 'architecture' : 'general',
+              this.config.adapter,
+              3,
+              true
+            );
+
+            // Update output with improved version
+            const improvedOutput = improveResult.finalContent;
+            this.workflowOutputs.set(workflow.id, improvedOutput);
+            await this.saveWorkflowOutput(workflow.id, workflow.name, improvedOutput);
+
+            p.log.success(`✅ İçerik ${improveResult.iterations} iterasyonda iyileştirildi!`);
+          }
+        } else {
+          // Auto mode: automatically try to improve if score is too low
+          if (qualityResult.result.score < qualityResult.result.minimumRequired * 0.8) {
+            p.log.info('🔄 Otomatik iyileştirme başlatılıyor...');
+
+            const improveResult = await improveUntilPass(
+              finalOutput,
+              workflow.id,
+              this.config.adapter,
+              5,
+              true
+            );
+
+            if (improveResult.passed) {
+              this.workflowOutputs.set(workflow.id, improveResult.content);
+              this.workflowScores.set(workflow.id, improveResult.finalScore);
+              await this.saveWorkflowOutput(workflow.id, workflow.name, improveResult.content);
+              p.log.success(`✅ İçerik otomatik iyileştirildi! (${improveResult.finalScore}/100)`);
+            }
+          }
+        }
+      }
 
       p.log.success(`✅ ${workflow.name} tamamlandı!`);
       console.log('');
@@ -555,7 +676,7 @@ ${analysis.recommendations.map(r => `- ${r}`).join('\n')}
     try {
       console.log('');
       console.log('╔' + '═'.repeat(58) + '╗');
-      console.log('║ 🏗️ KOD SCAFFOLDING'.padEnd(59) + '║');
+      console.log('║ 🏗️ KOD SCAFFOLDING - GERÇEK DOSYA YAZIMI'.padEnd(59) + '║');
       console.log('╚' + '═'.repeat(58) + '╝');
 
       // Get architecture info from previous outputs
@@ -566,36 +687,94 @@ ${analysis.recommendations.map(r => `- ${r}`).join('\n')}
       const techStackMatch = archOutput.match(/teknoloji|stack|framework/gi);
       const techStack = techStackMatch ? ['TypeScript', 'Node.js', 'React'] : ['TypeScript', 'Node.js'];
 
-      const result = await generateProjectScaffolding(
-        {
-          projectName: this.config.projectName,
-          architecture: archOutput.slice(0, 2000) || 'Standard web application',
-          techStack,
-          features: [this.config.idea],
-          outputPath: this.config.projectPath,
-        },
+      // In interactive mode, confirm before writing files
+      if (this.config.mode === 'interactive') {
+        const confirmWrite = await p.confirm({
+          message: `Proje dosyaları ${this.config.projectPath}/src dizinine yazılacak. Onaylıyor musun?`,
+          initialValue: true,
+        });
+
+        if (p.isCancel(confirmWrite) || !confirmWrite) {
+          p.log.warn('Kod scaffolding iptal edildi.');
+          return false;
+        }
+      }
+
+      // Use generateAndWriteCode for REAL file writing
+      console.log('');
+      p.log.info('📝 Proje dosyaları oluşturuluyor ve diske yazılıyor...');
+
+      const result = await generateAndWriteCode(
+        this.config.projectPath,
+        this.config.projectName,
+        archOutput.slice(0, 3000) || 'Standard web application with TypeScript',
+        techStack,
         this.config.adapter,
         true
       );
+
+      if (!result.success) {
+        p.log.error('Kod scaffolding başarısız oldu.');
+        return false;
+      }
+
+      // Also generate API files if applicable
+      if (archOutput.toLowerCase().includes('api') || archOutput.toLowerCase().includes('rest')) {
+        console.log('');
+        p.log.info('🔌 API dosyaları oluşturuluyor...');
+
+        const apiResult = await generateAPIFiles(
+          this.config.projectPath,
+          archOutput.slice(0, 2000),
+          this.config.adapter,
+          true
+        );
+
+        if (apiResult.success) {
+          result.files.push(...apiResult.files);
+        }
+      }
+
+      // Generate test files
+      console.log('');
+      p.log.info('🧪 Test dosyaları oluşturuluyor...');
+
+      const testResult = await generateTestFiles(
+        this.config.projectPath,
+        result.files.map(f => f.path),
+        this.config.adapter,
+        true
+      );
+
+      if (testResult.success) {
+        result.files.push(...testResult.files);
+      }
 
       // Save generated files info
       const output = `# Kod Scaffolding
 
 ## Oluşturulan Dosyalar
-${result.files.map(f => `- \`${f.path}\`: ${f.description}`).join('\n')}
+${result.files.map(f => `- \`${f.path}\`: ${f.description} ${f.written ? '✅' : '❌'}`).join('\n')}
 
-## Kurulum Talimatları
-${result.instructions}
+## İstatistikler
+- Toplam dosya: ${result.files.length}
+- Başarıyla yazılan: ${result.files.filter(f => f.written).length}
+- Hatalı: ${result.files.filter(f => !f.written).length}
+
+## Sonraki Adımlar
+1. \`cd ${this.config.projectPath}\`
+2. \`npm install\` veya \`pnpm install\`
+3. \`npm run dev\` veya \`pnpm dev\`
 
 ---
-📁 Toplam ${result.files.length} dosya planlandı
+📁 Toplam ${result.files.length} dosya diske yazıldı
 `;
 
       this.completedWorkflows.add(workflow.id);
       this.workflowOutputs.set(workflow.id, output);
       await this.saveWorkflowOutput(workflow.id, workflow.name, output);
 
-      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      p.log.success(`✅ ${workflow.name} tamamlandı! (${result.files.filter(f => f.written).length} dosya yazıldı)`);
       return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -611,8 +790,8 @@ ${result.instructions}
     try {
       console.log('');
       console.log('╔' + '═'.repeat(58) + '╗');
-      console.log('║ ⚔️ ADVERSARIAL REVIEW'.padEnd(59) + '║');
-      console.log('║ ' + 'Tüm dokümanları agresif şekilde eleştir'.padEnd(57) + '║');
+      console.log('║ ⚔️ ADVERSARIAL REVIEW (AUTO-FIX ENABLED)'.padEnd(59) + '║');
+      console.log('║ ' + 'Tüm dokümanları agresif şekilde eleştir ve düzelt'.padEnd(57) + '║');
       console.log('╚' + '═'.repeat(58) + '╝');
 
       const allOutputs = Array.from(this.workflowOutputs.entries())
@@ -626,6 +805,48 @@ ${result.instructions}
         true
       );
 
+      // If there are critical issues, run the review and fix loop for affected documents
+      const criticalFindings = result.findings.filter(f => f.severity === 'critical');
+      const fixedDocs: string[] = [];
+
+      if (criticalFindings.length > 0 && (this.config.mode === 'auto' || this.config.mode === 'interactive')) {
+        console.log('');
+        p.log.warn(`⚠️ ${criticalFindings.length} kritik bulgu tespit edildi!`);
+
+        const shouldFix = this.config.mode === 'auto' ? true : await (async () => {
+          const confirm = await p.confirm({
+            message: 'Kritik bulgular için otomatik düzeltme çalıştırılsın mı?',
+            initialValue: true,
+          });
+          return !p.isCancel(confirm) && confirm;
+        })();
+
+        if (shouldFix) {
+          // Fix PRD if it has critical issues
+          const prdContent = this.workflowOutputs.get('create-prd');
+          if (prdContent && criticalFindings.some(f => f.category.toLowerCase().includes('prd') || f.finding.toLowerCase().includes('prd'))) {
+            console.log('\n📋 PRD düzeltiliyor...');
+            const fixResult = await reviewAndFixLoop(prdContent, 'prd', this.config.adapter, 3, true);
+            this.workflowOutputs.set('create-prd', fixResult.finalContent);
+            await this.saveWorkflowOutput('create-prd', 'PRD', fixResult.finalContent);
+            fixedDocs.push('PRD');
+          }
+
+          // Fix Architecture if it has critical issues
+          const archContent = this.workflowOutputs.get('create-architecture');
+          if (archContent && criticalFindings.some(f => f.category.toLowerCase().includes('arch') || f.finding.toLowerCase().includes('mimari'))) {
+            console.log('\n🏗️ Mimari düzeltiliyor...');
+            const fixResult = await reviewAndFixLoop(archContent, 'architecture', this.config.adapter, 3, true);
+            this.workflowOutputs.set('create-architecture', fixResult.finalContent);
+            await this.saveWorkflowOutput('create-architecture', 'Architecture', fixResult.finalContent);
+            fixedDocs.push('Architecture');
+          }
+        }
+      }
+
+      const passScore = result.passedReview ? 80 : 40;
+      this.workflowScores.set(workflow.id, passScore);
+
       const output = `# Adversarial Review Raporu
 
 ## Özet
@@ -634,6 +855,7 @@ ${result.instructions}
 - Major: ${result.findings.filter(f => f.severity === 'major').length}
 - Minor: ${result.findings.filter(f => f.severity === 'minor').length}
 - Geçti mi: ${result.passedReview ? '✅ Evet' : '❌ Hayır'}
+${fixedDocs.length > 0 ? `- Düzeltilen dokümanlar: ${fixedDocs.join(', ')}` : ''}
 
 ## Bulgular
 
@@ -642,13 +864,16 @@ ${result.findings.map((f, i) => `### ${i + 1}. [${f.severity.toUpperCase()}] ${f
 **Etki:** ${f.impact}
 **Öneri:** ${f.recommendation}
 `).join('\n')}
+
+---
+🔍 Review Skoru: ${passScore}/100
 `;
 
       this.completedWorkflows.add(workflow.id);
       this.workflowOutputs.set(workflow.id, output);
       await this.saveWorkflowOutput(workflow.id, workflow.name, output);
 
-      p.log.success(`✅ ${workflow.name} tamamlandı! (${result.findings.length} bulgu)`);
+      p.log.success(`✅ ${workflow.name} tamamlandı! (${result.findings.length} bulgu${fixedDocs.length > 0 ? `, ${fixedDocs.length} doküman düzeltildi` : ''})`);
       return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -664,54 +889,131 @@ ${result.findings.map((f, i) => `### ${i + 1}. [${f.severity.toUpperCase()}] ${f
     try {
       console.log('');
       console.log('╔' + '═'.repeat(58) + '╗');
-      console.log('║ ✅ KALİTE VALİDASYONU'.padEnd(59) + '║');
+      console.log('║ ✅ KALİTE VALİDASYONU (QUALITY GATES)'.padEnd(59) + '║');
       console.log('╚' + '═'.repeat(58) + '╝');
 
-      const scores: { name: string; score: any }[] = [];
+      const scores: { name: string; id: string; score: any; gateResult?: QualityGateResult }[] = [];
+      let allPassed = true;
 
-      // PRD Quality
+      // PRD Quality Gate
       const prdContent = this.workflowOutputs.get('create-prd');
       if (prdContent) {
-        console.log('\n📋 PRD kalitesi değerlendiriliyor...');
+        console.log('\n📋 PRD kalite kapısı kontrol ediliyor...');
         const prdScore = await calculatePRDQuality(prdContent, this.config.adapter, true);
-        scores.push({ name: 'PRD', score: prdScore });
+        const prdGate = await runQualityGate('create-prd', prdContent, this.config.adapter, false);
+
+        this.workflowScores.set('create-prd', prdGate.result.score);
+        scores.push({ name: 'PRD', id: 'create-prd', score: prdScore, gateResult: prdGate.result });
+
+        if (!prdGate.result.passed) {
+          allPassed = false;
+          p.log.warn(`⚠️ PRD kalite kapısını geçemedi (${prdGate.result.score}/${prdGate.result.minimumRequired})`);
+
+          // Auto-fix if in auto mode
+          if (this.config.mode === 'auto') {
+            const improved = await improveUntilPass(prdContent, 'create-prd', this.config.adapter, 3, true);
+            if (improved.passed) {
+              this.workflowOutputs.set('create-prd', improved.content);
+              this.workflowScores.set('create-prd', improved.finalScore);
+              await this.saveWorkflowOutput('create-prd', 'PRD', improved.content);
+              p.log.success(`✅ PRD otomatik iyileştirildi (${improved.finalScore}/100)`);
+            }
+          }
+        } else {
+          p.log.success(`✅ PRD kalite kapısı geçti (${prdGate.result.score}/100)`);
+        }
       }
 
-      // Architecture Quality
+      // Architecture Quality Gate
       const archContent = this.workflowOutputs.get('create-architecture');
       if (archContent) {
-        console.log('\n🏗️ Mimari kalitesi değerlendiriliyor...');
+        console.log('\n🏗️ Mimari kalite kapısı kontrol ediliyor...');
         const archScore = await calculateArchitectureQuality(archContent, this.config.adapter, true);
-        scores.push({ name: 'Architecture', score: archScore });
+        const archGate = await runQualityGate('create-architecture', archContent, this.config.adapter, false);
+
+        this.workflowScores.set('create-architecture', archGate.result.score);
+        scores.push({ name: 'Architecture', id: 'create-architecture', score: archScore, gateResult: archGate.result });
+
+        if (!archGate.result.passed) {
+          allPassed = false;
+          p.log.warn(`⚠️ Mimari kalite kapısını geçemedi (${archGate.result.score}/${archGate.result.minimumRequired})`);
+
+          // Auto-fix if in auto mode
+          if (this.config.mode === 'auto') {
+            const improved = await improveUntilPass(archContent, 'create-architecture', this.config.adapter, 3, true);
+            if (improved.passed) {
+              this.workflowOutputs.set('create-architecture', improved.content);
+              this.workflowScores.set('create-architecture', improved.finalScore);
+              await this.saveWorkflowOutput('create-architecture', 'Architecture', improved.content);
+              p.log.success(`✅ Mimari otomatik iyileştirildi (${improved.finalScore}/100)`);
+            }
+          }
+        } else {
+          p.log.success(`✅ Mimari kalite kapısı geçti (${archGate.result.score}/100)`);
+        }
       }
+
+      // Epics & Stories Quality Gate
+      const epicsContent = this.workflowOutputs.get('create-epics-and-stories');
+      if (epicsContent) {
+        console.log('\n📚 Epic/Story kalite kapısı kontrol ediliyor...');
+        const epicsGate = await runQualityGate('create-epics-and-stories', epicsContent, this.config.adapter, false);
+
+        this.workflowScores.set('create-epics-and-stories', epicsGate.result.score);
+        scores.push({
+          name: 'Epics & Stories',
+          id: 'create-epics-and-stories',
+          score: { overall: epicsGate.result.score, grade: epicsGate.result.passed ? 'A' : 'C', summary: '', categories: [] },
+          gateResult: epicsGate.result,
+        });
+
+        if (!epicsGate.result.passed) {
+          allPassed = false;
+        }
+      }
+
+      const avgScore = scores.length > 0
+        ? Math.round(scores.reduce((a, s) => a + (s.gateResult?.score || s.score.overall), 0) / scores.length)
+        : 0;
 
       const output = `# Kalite Validasyon Raporu
 
-## Genel Skorlar
+## Genel Değerlendirme
+- **Tüm kapılar geçti mi:** ${allPassed ? '✅ Evet' : '❌ Hayır'}
+- **Ortalama Skor:** ${avgScore}/100
 
-| Doküman | Skor | Grade |
-|---------|------|-------|
-${scores.map(s => `| ${s.name} | ${s.score.overall}/100 | ${s.score.grade} |`).join('\n')}
+## Kalite Kapıları
+
+| Doküman | Skor | Minimum | Durum |
+|---------|------|---------|-------|
+${scores.map(s => `| ${s.name} | ${s.gateResult?.score || s.score.overall}/100 | ${s.gateResult?.minimumRequired || 70} | ${s.gateResult?.passed ? '✅ Geçti' : '❌ Geçemedi'} |`).join('\n')}
 
 ## Detaylı Analiz
 
 ${scores.map(s => `### ${s.name} (${s.score.overall}/100 - ${s.score.grade})
 
-${s.score.summary}
+${s.score.summary || 'Detaylı analiz mevcut değil.'}
 
-**Kategoriler:**
-${s.score.categories.map((c: any) => `- ${c.name}: ${c.score}/${c.maxScore}`).join('\n')}
+${s.gateResult ? `**Kalite Kapısı Detayları:**
+- Skor: ${s.gateResult.score}/${s.gateResult.minimumRequired}
+- Durum: ${s.gateResult.passed ? '✅ Geçti' : '❌ Geçemedi'}
+${s.gateResult.issues.length > 0 ? `- Sorunlar:\n${s.gateResult.issues.slice(0, 5).map(i => `  - [${i.severity}] ${i.message}`).join('\n')}` : ''}
+` : ''}
 `).join('\n')}
 
 ---
-📊 Ortalama Skor: ${Math.round(scores.reduce((a, s) => a + s.score.overall, 0) / scores.length)}/100
+📊 Ortalama Skor: ${avgScore}/100
+🚦 Sonuç: ${allPassed ? '✅ Tüm kalite kapıları geçildi - Implementation\'a geçilebilir' : '⚠️ Bazı kalite kapıları geçilemedi - İyileştirme gerekli'}
 `;
 
       this.completedWorkflows.add(workflow.id);
       this.workflowOutputs.set(workflow.id, output);
       await this.saveWorkflowOutput(workflow.id, workflow.name, output);
 
-      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      // Store overall validation score
+      this.workflowScores.set(workflow.id, avgScore);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı! (${allPassed ? 'Tüm kapılar geçti' : 'Bazı kapılar geçemedi'})`);
       return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -977,20 +1279,113 @@ generatedAt: ${new Date().toISOString()}
       totalSteps += workflow.stepCount;
     }
 
-    // Summary
+    // Summary with quality scores
     console.log('');
     console.log('╔══════════════════════════════════════════════════════════════╗');
     console.log('║                    📊 ÖZET                                   ║');
     console.log('╠══════════════════════════════════════════════════════════════╣');
     console.log(`║ Tamamlanan workflow: ${this.completedWorkflows.size}/${selectedWorkflows.length}`.padEnd(63) + '║');
     console.log(`║ Toplam adım: ${totalSteps}`.padEnd(63) + '║');
+    console.log('╟──────────────────────────────────────────────────────────────╢');
+    console.log('║                  📈 KALİTE SKORLARI                          ║');
+    console.log('╟──────────────────────────────────────────────────────────────╢');
+
+    // Show quality scores
+    const scoreEntries = Array.from(this.workflowScores.entries());
+    if (scoreEntries.length > 0) {
+      for (const [workflowId, score] of scoreEntries) {
+        const status = score >= 70 ? '✅' : score >= 50 ? '⚠️' : '❌';
+        console.log(`║ ${status} ${workflowId.padEnd(35)} ${score}/100`.padEnd(60) + '║');
+      }
+
+      const avgScore = Math.round(
+        scoreEntries.reduce((sum, [, s]) => sum + s, 0) / scoreEntries.length
+      );
+      console.log('╟──────────────────────────────────────────────────────────────╢');
+      console.log(`║ 📊 Ortalama Kalite Skoru: ${avgScore}/100`.padEnd(63) + '║');
+
+      // Overall assessment
+      const allPassed = scoreEntries.every(([, s]) => s >= 70);
+      if (allPassed) {
+        console.log('║ 🎉 Tüm kalite kapıları geçildi!'.padEnd(63) + '║');
+      } else {
+        const failedCount = scoreEntries.filter(([, s]) => s < 70).length;
+        console.log(`║ ⚠️ ${failedCount} workflow kalite kapısını geçemedi`.padEnd(63) + '║');
+      }
+    } else {
+      console.log('║ Henüz kalite skoru hesaplanmadı'.padEnd(63) + '║');
+    }
+
     console.log('╚══════════════════════════════════════════════════════════════╝');
+
+    // Save final summary report
+    await this.saveFinalReport(selectedWorkflows, totalSteps);
 
     return {
       success: this.completedWorkflows.size === selectedWorkflows.length,
       completedWorkflows: Array.from(this.completedWorkflows),
       totalSteps,
     };
+  }
+
+  /**
+   * Save final BMAD summary report
+   */
+  private async saveFinalReport(
+    workflows: WorkflowDefinition[],
+    totalSteps: number
+  ): Promise<void> {
+    const scoreEntries = Array.from(this.workflowScores.entries());
+    const avgScore = scoreEntries.length > 0
+      ? Math.round(scoreEntries.reduce((sum, [, s]) => sum + s, 0) / scoreEntries.length)
+      : 0;
+
+    const report = `---
+project: ${this.config.projectName}
+generatedAt: ${new Date().toISOString()}
+mode: ${this.config.mode}
+---
+
+# BMAD Workflow Raporu
+
+## Proje Bilgileri
+- **Proje Adı:** ${this.config.projectName}
+- **Fikir:** ${this.config.idea}
+- **Mod:** ${this.config.mode}
+- **Tarih:** ${new Date().toLocaleString('tr-TR')}
+
+## Workflow Özeti
+- **Toplam Workflow:** ${workflows.length}
+- **Tamamlanan:** ${this.completedWorkflows.size}
+- **Toplam Adım:** ${totalSteps}
+
+## Kalite Skorları
+
+| Workflow | Skor | Durum |
+|----------|------|-------|
+${scoreEntries.map(([id, score]) => `| ${id} | ${score}/100 | ${score >= 70 ? '✅ Geçti' : '❌ Geçemedi'} |`).join('\n')}
+
+**Ortalama Skor:** ${avgScore}/100
+
+## Tamamlanan Workflow'lar
+
+${Array.from(this.completedWorkflows).map(id => `- ✅ ${id}`).join('\n')}
+
+## Çıktı Dosyaları
+
+${Array.from(this.workflowOutputs.keys()).map(id => `- docs/${id}.md`).join('\n')}
+
+---
+
+🏭 Bu rapor AppFabrika BMAD Orchestrator tarafından otomatik oluşturulmuştur.
+`;
+
+    const docsDir = join(this.config.projectPath, 'docs');
+    await mkdir(docsDir, { recursive: true });
+    await writeFile(join(docsDir, 'bmad-report.md'), report, 'utf-8');
+
+    console.log('');
+    console.log('📄 Final rapor kaydedildi: docs/bmad-report.md');
   }
 }
 
