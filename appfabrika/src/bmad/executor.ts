@@ -235,7 +235,7 @@ Her perspektiften kısa bir yorum yap. Türkçe yanıt ver.`,
 }
 
 /**
- * Execute a complete step
+ * Execute a complete step (interactive mode)
  */
 export async function executeStep(
   step: ParsedStep,
@@ -250,54 +250,139 @@ export async function executeStep(
   }
   console.log('═'.repeat(60));
 
+  // Build step content
+  let stepContent = step.goal || '';
+  for (const section of step.sections) {
+    stepContent += `\n\n### ${section.title}\n${section.content}`;
+  }
+
+  // Extract techniques from step content
+  const techniques = extractTechniques(stepContent);
+
   let accumulatedContent = '';
   let iterations = 0;
   let approved = false;
 
-  // Execute non-menu sections first
-  const nonMenuSections = step.sections.filter(s => !s.isMenu);
-  const menuSections = step.sections.filter(s => s.isMenu);
+  // If multiple techniques found, ask user how to proceed
+  if (techniques.length >= 2) {
+    console.log('');
+    console.log(`🎯 ${techniques.length} teknik tespit edildi:`);
+    techniques.forEach((t, i) => console.log(`   ${i + 1}. ${t}`));
+    console.log('');
 
-  for (const section of nonMenuSections) {
-    const sectionContent = await executeSection(
-      section,
-      context,
-      adapter,
-      accumulatedContent
-    );
-    accumulatedContent += '\n\n' + sectionContent;
-    iterations++;
+    const runChoice = await p.select({
+      message: 'Bu tekniklerle ne yapmak istersin?',
+      options: [
+        { value: 'all', label: '🚀 Hepsini çalıştır ve sentezle (önerilen)' },
+        { value: 'select', label: '🎯 Bazılarını seç' },
+        { value: 'one', label: '1️⃣ Sadece birini seç' },
+        { value: 'skip', label: '⏭️ Bu adımı atla' },
+      ],
+    });
 
-    // Get user input if section has questions
-    if (section.questions.length > 0) {
-      const userInput = await p.text({
-        message: 'Cevabınız:',
-        placeholder: 'Düşüncelerinizi yazın...',
+    if (p.isCancel(runChoice)) {
+      return { success: false, output: '', userApproved: false, iterations };
+    }
+
+    if (runChoice === 'skip') {
+      return { success: true, output: 'Atlandı', userApproved: false, nextStep: step.meta.nextStepFile, iterations };
+    }
+
+    let selectedTechniques = techniques;
+
+    if (runChoice === 'select') {
+      // Multi-select
+      const selected = await p.multiselect({
+        message: 'Hangi teknikleri çalıştırmak istersin?',
+        options: techniques.map((t, i) => ({ value: i.toString(), label: `${i + 1}. ${t}` })),
       });
 
-      if (p.isCancel(userInput)) {
-        return {
-          success: false,
-          output: '',
-          userApproved: false,
-          iterations,
-        };
+      if (p.isCancel(selected)) {
+        return { success: false, output: '', userApproved: false, iterations };
       }
 
-      // Process user input
-      const processedContent = await streamResponse(
+      selectedTechniques = (selected as string[]).map(i => techniques[parseInt(i)]);
+    } else if (runChoice === 'one') {
+      // Single select
+      const selected = await p.select({
+        message: 'Hangi tekniği çalıştırmak istersin?',
+        options: techniques.map((t, i) => ({ value: i.toString(), label: `${i + 1}. ${t}` })),
+      });
+
+      if (p.isCancel(selected)) {
+        return { success: false, output: '', userApproved: false, iterations };
+      }
+
+      selectedTechniques = [techniques[parseInt(selected as string)]];
+    }
+
+    // Run selected techniques
+    const outputs: string[] = [];
+
+    for (let i = 0; i < selectedTechniques.length; i++) {
+      const output = await runTechnique(
+        selectedTechniques[i],
+        i,
+        selectedTechniques.length,
+        context,
         adapter,
-        `Önceki içerik:
-${accumulatedContent}
-
-Kullanıcı cevabı: ${userInput}
-
-Bu cevabı analiz et ve içeriğe entegre et. Türkçe yanıt ver.`,
-        'Sen bir kolaylaştırıcısın. Kullanıcı cevabını mevcut içeriğe entegre et.'
+        true
       );
-
-      accumulatedContent = processedContent;
+      outputs.push(output);
       iterations++;
+    }
+
+    // Synthesize if multiple
+    if (selectedTechniques.length > 1) {
+      const synthesis = await synthesizeTechniques(
+        selectedTechniques,
+        outputs,
+        context,
+        adapter,
+        true
+      );
+      iterations++;
+
+      accumulatedContent = selectedTechniques.map((t, i) =>
+        `## ${t}\n\n${outputs[i]}`
+      ).join('\n\n---\n\n') + '\n\n---\n\n# SENTEZ\n\n' + synthesis;
+    } else {
+      accumulatedContent = `## ${selectedTechniques[0]}\n\n${outputs[0]}`;
+    }
+  } else {
+    // No multiple techniques, run standard sections
+    const nonMenuSections = step.sections.filter(s => !s.isMenu);
+
+    for (const section of nonMenuSections) {
+      const sectionContent = await executeSection(
+        section,
+        context,
+        adapter,
+        accumulatedContent
+      );
+      accumulatedContent += '\n\n' + sectionContent;
+      iterations++;
+
+      // Get user input if section has questions
+      if (section.questions.length > 0) {
+        const userInput = await p.text({
+          message: 'Cevabınız:',
+          placeholder: 'Düşüncelerinizi yazın...',
+        });
+
+        if (p.isCancel(userInput)) {
+          return { success: false, output: '', userApproved: false, iterations };
+        }
+
+        const processedContent = await streamResponse(
+          adapter,
+          `Önceki içerik:\n${accumulatedContent}\n\nKullanıcı cevabı: ${userInput}\n\nBu cevabı analiz et ve içeriğe entegre et. Türkçe yanıt ver.`,
+          'Sen bir kolaylaştırıcısın. Kullanıcı cevabını mevcut içeriğe entegre et.'
+        );
+
+        accumulatedContent = processedContent;
+        iterations++;
+      }
     }
   }
 
@@ -311,29 +396,17 @@ Bu cevabı analiz et ve içeriğe entegre et. Türkçe yanıt ver.`,
     );
 
     if (menuResult.action === 'cancel') {
-      return {
-        success: false,
-        output: '',
-        userApproved: false,
-        iterations,
-      };
+      return { success: false, output: '', userApproved: false, iterations };
     }
 
     if (menuResult.action === 'skip') {
-      return {
-        success: true,
-        output: 'Atlandı',
-        userApproved: false,
-        nextStep: step.meta.nextStepFile,
-        iterations,
-      };
+      return { success: true, output: 'Atlandı', userApproved: false, nextStep: step.meta.nextStepFile, iterations };
     }
 
     if (menuResult.continue) {
       approved = true;
       accumulatedContent = menuResult.content;
     } else {
-      // Update content and loop back to menu
       if (menuResult.content) {
         accumulatedContent = menuResult.content;
       }
@@ -442,7 +515,159 @@ Türkçe ve özlü yaz. Markdown formatında.`;
 }
 
 /**
- * Execute step in auto mode (no user interaction, just AI generation)
+ * Extract techniques/options from step content
+ */
+function extractTechniques(content: string): string[] {
+  const techniques: string[] = [];
+
+  // Match numbered techniques like "1. SCAMPER", "**1. SCAMPER**", etc.
+  const numberedPattern = /(?:\*\*)?(\d+)\.\s*(?:\*\*)?([^*\n]+?)(?:\*\*)?(?:\s*[-–]\s*|\s*\()/g;
+  let match;
+  while ((match = numberedPattern.exec(content)) !== null) {
+    const name = match[2].trim();
+    if (name.length > 2 && name.length < 50) {
+      techniques.push(name);
+    }
+  }
+
+  // Match lettered options like "A) Option", "**A)** Option"
+  const letteredPattern = /(?:\*\*)?([A-Z])\)(?:\*\*)?\s*(?:\*\*)?([^*\n]+?)(?:\*\*)?(?:\s*[-–]|\n)/g;
+  while ((match = letteredPattern.exec(content)) !== null) {
+    const name = match[2].trim();
+    if (name.length > 2 && name.length < 50 && !techniques.includes(name)) {
+      techniques.push(name);
+    }
+  }
+
+  // Match bold headers like "**SCAMPER Yöntemi**"
+  const boldPattern = /\*\*([^*]+?(?:Yöntemi|Tekniği|Analizi|Düşünme|Yaklaşımı))\*\*/g;
+  while ((match = boldPattern.exec(content)) !== null) {
+    const name = match[1].trim();
+    if (name.length > 2 && name.length < 50 && !techniques.includes(name)) {
+      techniques.push(name);
+    }
+  }
+
+  return techniques.slice(0, 10); // Max 10 techniques
+}
+
+/**
+ * Run a single technique and get output
+ */
+async function runTechnique(
+  techniqueName: string,
+  techniqueIndex: number,
+  totalTechniques: number,
+  context: ExecutionContext,
+  adapter: AnthropicAdapter,
+  showOutput: boolean = true
+): Promise<string> {
+  if (showOutput) {
+    console.log('');
+    console.log(`🔄 Teknik ${techniqueIndex + 1}/${totalTechniques}: ${techniqueName}`);
+    console.log('┌' + '─'.repeat(58) + '┐');
+    console.log(`│ 🤖 ${techniqueName} Analizi:`.padEnd(59) + '│');
+    console.log('└' + '─'.repeat(58) + '┘');
+  }
+
+  const systemPrompt = `Sen deneyimli bir ürün geliştirme ve beyin fırtınası uzmanısın.
+"${techniqueName}" tekniğini kullanarak kapsamlı bir analiz yap.
+Bu tekniğin tüm adımlarını uygula ve somut sonuçlar üret.
+Türkçe yanıt ver.`;
+
+  const previousContext = Array.from(context.previousOutputs.entries())
+    .slice(-2)
+    .map(([id, content]) => `### ${id}\n${content.slice(0, 1000)}`)
+    .join('\n\n');
+
+  const prompt = `Proje: "${context.idea}"
+
+Önceki Bağlam:
+${previousContext || 'Yok'}
+
+---
+
+"${techniqueName}" tekniğini "${context.idea}" projesi için uygula.
+
+Bu tekniğin:
+1. Ana prensiplerini açıkla
+2. Projeye özel olarak uygula
+3. Somut bulgular ve öneriler çıkar
+4. Aksiyon maddeleri belirle
+
+Detaylı ve pratik ol. Türkçe yanıt ver.`;
+
+  const output = await streamResponse(adapter, prompt, systemPrompt, showOutput);
+
+  if (showOutput) {
+    console.log('────────────────────────────────────────────────────────────');
+  }
+
+  return output;
+}
+
+/**
+ * Synthesize all technique outputs
+ */
+async function synthesizeTechniques(
+  techniques: string[],
+  outputs: string[],
+  context: ExecutionContext,
+  adapter: AnthropicAdapter,
+  showOutput: boolean = true
+): Promise<string> {
+  if (showOutput) {
+    console.log('');
+    console.log('════════════════════════════════════════════════════════════');
+    console.log('📊 TÜM TEKNİKLERİN SENTEZİ');
+    console.log('════════════════════════════════════════════════════════════');
+  }
+
+  const systemPrompt = `Sen deneyimli bir strateji ve sentez uzmanısın.
+Birden fazla tekniğin sonuçlarını analiz edip kapsamlı bir sentez oluştur.
+Türkçe yanıt ver.`;
+
+  const techniquesWithOutputs = techniques.map((t, i) =>
+    `### ${t}\n${outputs[i].slice(0, 1500)}`
+  ).join('\n\n---\n\n');
+
+  const prompt = `Proje: "${context.idea}"
+
+Aşağıdaki ${techniques.length} tekniğin sonuçlarını sentezle:
+
+${techniquesWithOutputs}
+
+---
+
+## Sentez Raporu Oluştur:
+
+### 1. Ortak Bulgular
+(Tüm tekniklerde tekrar eden temalar)
+
+### 2. Benzersiz Perspektifler
+(Her tekniğin getirdiği farklı bakış açıları)
+
+### 3. Ana Çıkarımlar
+(En önemli 5-7 sonuç)
+
+### 4. Çelişkiler ve Gerilimler
+(Varsa, farklı tekniklerin çelişen önerileri)
+
+### 5. Önerilen Yol Haritası
+(Tüm bulgulara dayanan somut adımlar)
+
+### 6. Öncelikler
+(Hangi bulgular en kritik)
+
+Kapsamlı ve aksiyon odaklı ol. Türkçe yanıt ver.`;
+
+  const synthesis = await streamResponse(adapter, prompt, systemPrompt, showOutput);
+
+  return synthesis;
+}
+
+/**
+ * Execute step in auto mode with ALL techniques (no user interaction)
  */
 export async function executeStepAuto(
   step: ParsedStep,
@@ -460,21 +685,76 @@ export async function executeStepAuto(
     console.log('╚' + '═'.repeat(58) + '╝');
   }
 
-  const systemPrompt = `Sen deneyimli bir ürün geliştirme uzmanısın. BMAD metodolojisini kullanıyorsun.
-Bu adımı otomatik olarak tamamla. Kapsamlı ve detaylı çıktı üret.
-Türkçe yanıt ver.`;
-
-  // Build context from previous outputs
-  const previousContext = Array.from(context.previousOutputs.entries())
-    .slice(-2)
-    .map(([id, content]) => `### ${id}\n${content.slice(0, 1500)}`)
-    .join('\n\n');
-
-  // Build prompt from step content
+  // Build step content
   let stepContent = step.goal || '';
   for (const section of step.sections) {
     stepContent += `\n\n### ${section.title}\n${section.content}`;
   }
+
+  // Extract techniques from step content
+  const techniques = extractTechniques(stepContent);
+
+  // If multiple techniques found, run ALL of them
+  if (techniques.length >= 2) {
+    if (showOutput) {
+      console.log('');
+      console.log(`🎯 ${techniques.length} teknik tespit edildi - HEPSİ çalıştırılacak:`);
+      techniques.forEach((t, i) => console.log(`   ${i + 1}. ${t}`));
+      console.log('');
+    }
+
+    const outputs: string[] = [];
+
+    // Run each technique
+    for (let i = 0; i < techniques.length; i++) {
+      const output = await runTechnique(
+        techniques[i],
+        i,
+        techniques.length,
+        context,
+        adapter,
+        showOutput
+      );
+      outputs.push(output);
+    }
+
+    // Synthesize all outputs
+    const synthesis = await synthesizeTechniques(
+      techniques,
+      outputs,
+      context,
+      adapter,
+      showOutput
+    );
+
+    // Combine all outputs
+    const fullOutput = techniques.map((t, i) =>
+      `## ${t}\n\n${outputs[i]}`
+    ).join('\n\n---\n\n') + '\n\n---\n\n# SENTEZ\n\n' + synthesis;
+
+    if (showOutput) {
+      console.log('');
+      console.log(`✅ ${step.meta.name} tamamlandı (${techniques.length} teknik + sentez)`);
+    }
+
+    return {
+      success: true,
+      output: fullOutput,
+      userApproved: true,
+      nextStep: step.meta.nextStepFile,
+      iterations: techniques.length + 1,
+    };
+  }
+
+  // No multiple techniques, run standard step
+  const systemPrompt = `Sen deneyimli bir ürün geliştirme uzmanısın. BMAD metodolojisini kullanıyorsun.
+Bu adımı otomatik olarak tamamla. Kapsamlı ve detaylı çıktı üret.
+Türkçe yanıt ver.`;
+
+  const previousContext = Array.from(context.previousOutputs.entries())
+    .slice(-2)
+    .map(([id, content]) => `### ${id}\n${content.slice(0, 1500)}`)
+    .join('\n\n');
 
   const prompt = `Proje: "${context.idea}"
 Workflow: ${context.workflow.meta.name}
@@ -501,7 +781,7 @@ Bu adımı tamamla. Tüm gereksinimleri karşıla. Türkçe ve detaylı yanıt v
   return {
     success: true,
     output,
-    userApproved: true, // Auto mode = auto approved
+    userApproved: true,
     nextStep: step.meta.nextStepFile,
     iterations: 1,
   };
