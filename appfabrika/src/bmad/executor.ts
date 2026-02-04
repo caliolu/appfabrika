@@ -14,18 +14,23 @@ import type {
 } from './types.js';
 
 /**
- * Stream AI response to console
+ * Stream AI response to console with clear formatting
  */
 async function streamResponse(
   adapter: AnthropicAdapter,
   prompt: string,
-  systemPrompt: string
+  systemPrompt: string,
+  showOutput: boolean = true
 ): Promise<string> {
   let fullContent = '';
 
-  console.log('');
-  console.log('─'.repeat(50));
-  console.log('');
+  if (showOutput) {
+    console.log('');
+    console.log('┌' + '─'.repeat(58) + '┐');
+    console.log('│ 🤖 AI Yanıtı:'.padEnd(59) + '│');
+    console.log('└' + '─'.repeat(58) + '┘');
+    console.log('');
+  }
 
   const stream = adapter.stream(prompt, {
     maxTokens: 4096,
@@ -33,13 +38,17 @@ async function streamResponse(
   });
 
   for await (const chunk of stream) {
-    process.stdout.write(chunk);
+    if (showOutput) {
+      process.stdout.write(chunk);
+    }
     fullContent += chunk;
   }
 
-  console.log('');
-  console.log('');
-  console.log('─'.repeat(50));
+  if (showOutput) {
+    console.log('');
+    console.log('');
+    console.log('─'.repeat(60));
+  }
 
   return fullContent;
 }
@@ -438,15 +447,18 @@ Türkçe ve özlü yaz. Markdown formatında.`;
 export async function executeStepAuto(
   step: ParsedStep,
   context: ExecutionContext,
-  adapter: AnthropicAdapter
+  adapter: AnthropicAdapter,
+  showOutput: boolean = true
 ): Promise<StepResult> {
-  console.log('');
-  console.log('─'.repeat(50));
-  console.log(`🤖 ${step.meta.name}`);
-  if (step.meta.description) {
-    console.log(`   ${step.meta.description}`);
+  if (showOutput) {
+    console.log('');
+    console.log('╔' + '═'.repeat(58) + '╗');
+    console.log(`║ 📌 ADIM: ${step.meta.name}`.padEnd(59) + '║');
+    if (step.meta.description) {
+      console.log(`║    ${step.meta.description.slice(0, 50)}`.padEnd(59) + '║');
+    }
+    console.log('╚' + '═'.repeat(58) + '╝');
   }
-  console.log('─'.repeat(50));
 
   const systemPrompt = `Sen deneyimli bir ürün geliştirme uzmanısın. BMAD metodolojisini kullanıyorsun.
 Bu adımı otomatik olarak tamamla. Kapsamlı ve detaylı çıktı üret.
@@ -479,7 +491,12 @@ ${stepContent}
 
 Bu adımı tamamla. Tüm gereksinimleri karşıla. Türkçe ve detaylı yanıt ver.`;
 
-  const output = await streamResponse(adapter, prompt, systemPrompt);
+  const output = await streamResponse(adapter, prompt, systemPrompt, showOutput);
+
+  if (showOutput) {
+    console.log('');
+    console.log(`✅ ${step.meta.name} tamamlandı`);
+  }
 
   return {
     success: true,

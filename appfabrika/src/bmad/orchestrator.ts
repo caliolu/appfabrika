@@ -31,6 +31,11 @@ type WorkflowMode = 'all' | 'required' | 'custom';
 type ExecutionMode = 'interactive' | 'auto';
 
 /**
+ * Workflow selection mode
+ */
+type SelectionMode = 'full' | 'required';
+
+/**
  * Orchestrator configuration
  */
 interface OrchestratorConfig {
@@ -40,6 +45,7 @@ interface OrchestratorConfig {
   idea: string;
   adapter: AnthropicAdapter;
   mode: ExecutionMode;
+  selectionMode?: SelectionMode;
 }
 
 /**
@@ -85,6 +91,22 @@ export class BmadOrchestrator {
    * Select which workflows to run
    */
   private async selectWorkflows(): Promise<WorkflowDefinition[] | null> {
+    // If selection mode is 'required', skip the selection UI
+    if (this.config.selectionMode === 'required') {
+      const requiredWorkflows = BMAD_PHASES.flatMap(phase =>
+        phase.workflows.filter(w => w.required)
+      );
+
+      console.log('');
+      p.log.info(`📋 Zorunlu workflow'lar otomatik seçildi (${requiredWorkflows.length} workflow)`);
+
+      for (const wf of requiredWorkflows) {
+        console.log(`   ${wf.agentEmoji} ${wf.name} (${wf.stepCount} adım)`);
+      }
+
+      return requiredWorkflows;
+    }
+
     this.displayPhaseOverview();
 
     const modeChoice = await p.select({
@@ -471,7 +493,8 @@ export async function runBmadWorkflow(
   projectName: string,
   idea: string,
   adapter: AnthropicAdapter,
-  mode: 'interactive' | 'auto' = 'interactive'
+  mode: 'interactive' | 'auto' = 'interactive',
+  selectionMode: 'full' | 'required' = 'full'
 ): Promise<boolean> {
   // Find BMAD root
   const bmadRoot = await findBmadRoot(projectPath);
@@ -498,6 +521,7 @@ export async function runBmadWorkflow(
       idea,
       adapter,
       mode,
+      selectionMode,
     });
 
     const result = await orchestrator.run();
@@ -511,6 +535,7 @@ export async function runBmadWorkflow(
     idea,
     adapter,
     mode,
+    selectionMode,
   });
 
   const result = await orchestrator.run();

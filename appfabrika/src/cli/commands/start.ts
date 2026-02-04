@@ -493,22 +493,22 @@ export const startCommand = new Command('start')
           {
             value: 'bmad',
             label: MESSAGES.MODE_BMAD,
-            hint: 'Gerçek BMAD: 4 faz, 15+ workflow, 80+ alt adım, her adımda onay',
+            hint: 'Tüm fazlar, tüm workflow\'lar seçilebilir, her adımda onay',
           },
           {
             value: 'bmad-auto',
             label: MESSAGES.MODE_BMAD_AUTO,
-            hint: 'Gerçek BMAD: 4 faz, 15+ workflow, 80+ alt adım, tam otomatik',
+            hint: 'Tüm fazlar, tüm workflow\'lar seçilebilir, tam otomatik',
           },
           {
             value: 'interactive',
             label: MESSAGES.MODE_INTERACTIVE,
-            hint: 'Basit 12 adım, her adımda 3 seçenek, geri bildirim',
+            hint: 'Sadece zorunlu workflow\'lar, her adımda onay',
           },
           {
             value: 'quick',
             label: MESSAGES.MODE_QUICK,
-            hint: 'Basit 12 adım, otomatik çalıştır',
+            hint: 'Sadece zorunlu workflow\'lar, tam otomatik',
           },
         ],
       });
@@ -576,28 +576,43 @@ export const startCommand = new Command('start')
 
     console.log('');
     p.log.info(MESSAGES.WORKFLOW_START);
-    const modeLabel = workflowMode === 'bmad' ? 'BMAD Full' : workflowMode === 'interactive' ? 'İnteraktif' : 'Hızlı';
-    console.log(`📌 Mod: ${modeLabel}`);
 
-    // BMAD FULL MODE: Use the full BMAD orchestrator
-    if (workflowMode === 'bmad' || workflowMode === 'bmad-auto') {
-      const bmadMode = workflowMode === 'bmad-auto' ? 'auto' : 'interactive';
+    // ALL MODES now use the BMAD workflow system
+    // Difference is in execution mode (interactive vs auto)
+    const modeLabels: Record<WorkflowMode, string> = {
+      'bmad': 'BMAD Full İnteraktif',
+      'bmad-auto': 'BMAD Full Otomatik',
+      'interactive': 'BMAD İnteraktif',
+      'quick': 'BMAD Otomatik',
+    };
+    console.log(`📌 Mod: ${modeLabels[workflowMode]}`);
 
-      const success = await runBmadWorkflow(
-        projectPath,
-        projectName,
-        idea.trim(),
-        adapter,
-        bmadMode
-      );
+    // Determine execution mode and selection mode
+    const isAutoMode = workflowMode === 'bmad-auto' || workflowMode === 'quick';
+    const bmadMode = isAutoMode ? 'auto' : 'interactive';
 
-      if (success) {
-        p.outro(MESSAGES.WORKFLOW_COMPLETE);
-      } else {
-        p.log.warn('Workflow tamamlanamadı.');
-      }
-      return;
+    // 'bmad' and 'bmad-auto' allow full workflow selection
+    // 'interactive' and 'quick' default to required workflows only
+    const selectionMode = (workflowMode === 'bmad' || workflowMode === 'bmad-auto') ? 'full' : 'required';
+
+    const success = await runBmadWorkflow(
+      projectPath,
+      projectName,
+      idea.trim(),
+      adapter,
+      bmadMode,
+      selectionMode
+    );
+
+    if (success) {
+      p.outro(MESSAGES.WORKFLOW_COMPLETE);
+    } else {
+      p.log.warn('Workflow tamamlanamadı.');
     }
+    return;
+
+    // LEGACY CODE BELOW - kept for reference but not executed
+    // All modes now use BMAD workflow system above
 
     const spinner = getSpinnerService();
     const completionScreen = getCompletionScreen();
@@ -606,7 +621,7 @@ export const startCommand = new Command('start')
     const startTime = Date.now();
     let totalIterations = 0;
 
-    // Execute workflow (interactive or quick mode)
+    // Execute workflow (interactive or quick mode) - LEGACY
     for (let i = 0; i < BMAD_STEPS.length; i++) {
       const stepId = BMAD_STEPS[i];
       const stepName = BMAD_STEP_NAMES[stepId];
