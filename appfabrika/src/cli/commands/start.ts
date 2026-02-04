@@ -13,7 +13,13 @@ import { getCompletionScreen } from '../ui/completion-screen.js';
 import { BMAD_STEPS, BMAD_STEP_NAMES, BMAD_STEP_EMOJIS, BmadStepType } from '../../types/bmad.types.js';
 import { AnthropicAdapter } from '../../adapters/llm/anthropic.adapter.js';
 import { getSecretManager } from '../../core/secrets.js';
+import { runInteractiveStep } from './interactive-workflow.js';
 import type { ProjectConfig, LLMProvider, AutomationTemplate } from '../../types/index.js';
+
+/**
+ * Workflow mode - quick (auto) or interactive (full conversation)
+ */
+type WorkflowMode = 'quick' | 'interactive';
 
 /**
  * Turkish messages
@@ -31,6 +37,9 @@ const MESSAGES = {
   MANUAL_STEP: 'Bu adım manuel tamamlanmalı.',
   PRESS_ENTER: 'Tamamladıktan sonra Enter\'a basın...',
   WORKFLOW_COMPLETE: 'Workflow tamamlandı!',
+  MODE_SELECT: '🎯 Çalışma Modu',
+  MODE_INTERACTIVE: '🎨 İnteraktif mod (her adımda seçenekler, geri bildirim, iterasyonlar)',
+  MODE_QUICK: '⚡ Hızlı mod (otomatik çalıştır, minimal etkileşim)',
 } as const;
 
 /**
@@ -418,7 +427,8 @@ async function saveStepCheckpoint(
  */
 export const startCommand = new Command('start')
   .description('Yeni proje başlat ve BMAD workflow\'unu çalıştır')
-  .option('-a, --auto', 'Tüm adımları otomatik çalıştır')
+  .option('-a, --auto', 'Tüm adımları otomatik çalıştır (hızlı mod)')
+  .option('-i, --interactive', 'İnteraktif mod (seçenekler, geri bildirim, iterasyonlar)')
   .action(async (options) => {
     p.intro(MESSAGES.WELCOME);
 
@@ -448,21 +458,56 @@ export const startCommand = new Command('start')
       process.exit(0);
     }
 
-    // Collect step preferences (unless --auto)
-    let stepPreferences: Map<BmadStepType, StepMode>;
+    // Select workflow mode
+    let workflowMode: WorkflowMode = 'quick';
+    let stepPreferences: Map<BmadStepType, StepMode> = new Map();
 
     if (options.auto) {
-      stepPreferences = new Map();
+      // --auto flag: quick mode, all steps auto
+      workflowMode = 'quick';
       for (const stepId of BMAD_STEPS) {
         stepPreferences.set(stepId, 'auto');
       }
+    } else if (options.interactive) {
+      // --interactive flag: interactive mode
+      workflowMode = 'interactive';
     } else {
-      const prefs = await collectStepPreferences();
-      if (!prefs) {
+      // Ask user for mode
+      console.log('');
+      p.log.info(MESSAGES.MODE_SELECT);
+
+      const modeChoice = await p.select({
+        message: 'Nasıl çalışmak istersiniz?',
+        options: [
+          {
+            value: 'interactive',
+            label: MESSAGES.MODE_INTERACTIVE,
+            hint: 'Her adımda 3 seçenek sunar, geri bildirim alır, istediğiniz kadar revize eder',
+          },
+          {
+            value: 'quick',
+            label: MESSAGES.MODE_QUICK,
+            hint: 'Tüm adımları otomatik çalıştırır, sonucu gösterir',
+          },
+        ],
+      });
+
+      if (p.isCancel(modeChoice)) {
         p.cancel('İptal edildi.');
         process.exit(0);
       }
-      stepPreferences = prefs;
+
+      workflowMode = modeChoice as WorkflowMode;
+
+      // For quick mode, collect step preferences
+      if (workflowMode === 'quick') {
+        const prefs = await collectStepPreferences();
+        if (!prefs) {
+          p.cancel('İptal edildi.');
+          process.exit(0);
+        }
+        stepPreferences = prefs;
+      }
     }
 
     // Create project folder
@@ -510,67 +555,97 @@ export const startCommand = new Command('start')
 
     console.log('');
     p.log.info(MESSAGES.WORKFLOW_START);
+    console.log(`📌 Mod: ${workflowMode === 'interactive' ? 'İnteraktif' : 'Hızlı'}`);
 
     const spinner = getSpinnerService();
     const completionScreen = getCompletionScreen();
     const completedSteps: BmadStepType[] = [];
+    const previousStepOutputs = new Map<BmadStepType, string>();
     const startTime = Date.now();
+    let totalIterations = 0;
 
     // Execute workflow
     for (let i = 0; i < BMAD_STEPS.length; i++) {
       const stepId = BMAD_STEPS[i];
       const stepName = BMAD_STEP_NAMES[stepId];
       const emoji = BMAD_STEP_EMOJIS[stepId];
-      const stepMode = stepPreferences.get(stepId) || 'auto';
 
-      // Handle skip
-      if (stepMode === 'skip') {
-        console.log('');
-        p.log.warn(`${emoji} ${stepName} atlandı`);
-        continue;
-      }
+      if (workflowMode === 'interactive') {
+        // INTERACTIVE MODE: Full conversational workflow
+        const result = await runInteractiveStep(
+          stepId,
+          idea.trim(),
+          adapter,
+          previousStepOutputs
+        );
 
-      // Handle manual
-      if (stepMode === 'manual') {
-        console.log('');
-        p.log.info(`${emoji} ${stepName} - ${MESSAGES.MANUAL_STEP}`);
-        await p.text({
-          message: MESSAGES.PRESS_ENTER,
-          placeholder: 'Enter\'a basın...',
-        });
-        await saveStepCheckpoint(projectPath, stepId, 'Manuel olarak tamamlandı');
-        completedSteps.push(stepId);
-        p.log.success(`${emoji} ${stepName} ${MESSAGES.STEP_COMPLETE}`);
-        continue;
-      }
-
-      // Auto mode
-      spinner.startStep(stepId);
-      const result = await executeStep(stepId, idea.trim(), spinner, adapter, projectPath, i);
-
-      if (result.success) {
-        await saveStepCheckpoint(projectPath, stepId, result.output);
-        completedSteps.push(stepId);
-        p.log.success(`${emoji} ${stepName} ${MESSAGES.STEP_COMPLETE}`);
-      } else {
-        p.log.error(`${emoji} ${stepName} başarısız: ${result.output}`);
-
-        const action = await p.select({
-          message: 'Ne yapmak istersiniz?',
-          options: [
-            { value: 'retry', label: '🔄 Yeniden dene' },
-            { value: 'skip', label: '⏭️ Atla' },
-            { value: 'quit', label: '🚪 Çıkış' },
-          ],
-        });
-
-        if (p.isCancel(action) || action === 'quit') {
+        if (result.approved) {
+          await saveStepCheckpoint(projectPath, stepId, result.finalOutput);
+          previousStepOutputs.set(stepId, result.finalOutput);
+          completedSteps.push(stepId);
+          totalIterations += result.iterations;
+        } else if (result.finalOutput === 'Atlandı') {
+          console.log('');
+          p.log.warn(`${emoji} ${stepName} atlandı`);
+        } else {
+          // User cancelled
           p.cancel('Workflow duraklatıldı.');
-          process.exit(1);
+          process.exit(0);
+        }
+      } else {
+        // QUICK MODE: Auto/manual/skip based on preferences
+        const stepMode = stepPreferences.get(stepId) || 'auto';
+
+        // Handle skip
+        if (stepMode === 'skip') {
+          console.log('');
+          p.log.warn(`${emoji} ${stepName} atlandı`);
+          continue;
         }
 
-        if (action === 'retry') {
-          i--; // Retry this step
+        // Handle manual
+        if (stepMode === 'manual') {
+          console.log('');
+          p.log.info(`${emoji} ${stepName} - ${MESSAGES.MANUAL_STEP}`);
+          await p.text({
+            message: MESSAGES.PRESS_ENTER,
+            placeholder: 'Enter\'a basın...',
+          });
+          await saveStepCheckpoint(projectPath, stepId, 'Manuel olarak tamamlandı');
+          completedSteps.push(stepId);
+          p.log.success(`${emoji} ${stepName} ${MESSAGES.STEP_COMPLETE}`);
+          continue;
+        }
+
+        // Auto mode
+        spinner.startStep(stepId);
+        const result = await executeStep(stepId, idea.trim(), spinner, adapter, projectPath, i);
+
+        if (result.success) {
+          await saveStepCheckpoint(projectPath, stepId, result.output);
+          previousStepOutputs.set(stepId, result.output);
+          completedSteps.push(stepId);
+          p.log.success(`${emoji} ${stepName} ${MESSAGES.STEP_COMPLETE}`);
+        } else {
+          p.log.error(`${emoji} ${stepName} başarısız: ${result.output}`);
+
+          const action = await p.select({
+            message: 'Ne yapmak istersiniz?',
+            options: [
+              { value: 'retry', label: '🔄 Yeniden dene' },
+              { value: 'skip', label: '⏭️ Atla' },
+              { value: 'quit', label: '🚪 Çıkış' },
+            ],
+          });
+
+          if (p.isCancel(action) || action === 'quit') {
+            p.cancel('Workflow duraklatıldı.');
+            process.exit(1);
+          }
+
+          if (action === 'retry') {
+            i--; // Retry this step
+          }
         }
       }
     }
@@ -588,6 +663,10 @@ export const startCommand = new Command('start')
         durationMs: duration,
       },
     }));
+
+    if (workflowMode === 'interactive' && totalIterations > 0) {
+      console.log(`📊 Toplam iterasyon: ${totalIterations}`);
+    }
 
     p.outro(MESSAGES.WORKFLOW_COMPLETE);
   });
