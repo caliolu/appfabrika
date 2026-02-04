@@ -14,12 +14,13 @@ import { BMAD_STEPS, BMAD_STEP_NAMES, BMAD_STEP_EMOJIS, BmadStepType } from '../
 import { AnthropicAdapter } from '../../adapters/llm/anthropic.adapter.js';
 import { getSecretManager } from '../../core/secrets.js';
 import { runInteractiveStep } from './interactive-workflow.js';
+import { runBmadWorkflow } from '../../bmad/index.js';
 import type { ProjectConfig, LLMProvider, AutomationTemplate } from '../../types/index.js';
 
 /**
- * Workflow mode - quick (auto) or interactive (full conversation)
+ * Workflow mode - quick (auto), interactive (full conversation), or bmad (full BMAD methodology)
  */
-type WorkflowMode = 'quick' | 'interactive';
+type WorkflowMode = 'quick' | 'interactive' | 'bmad';
 
 /**
  * Turkish messages
@@ -40,6 +41,7 @@ const MESSAGES = {
   MODE_SELECT: '🎯 Çalışma Modu',
   MODE_INTERACTIVE: '🎨 İnteraktif mod (her adımda seçenekler, geri bildirim, iterasyonlar)',
   MODE_QUICK: '⚡ Hızlı mod (otomatik çalıştır, minimal etkileşim)',
+  MODE_BMAD: '🏭 BMAD Full (tüm fazlar, tüm workflow\'lar, ~80+ alt adım)',
 } as const;
 
 /**
@@ -429,6 +431,7 @@ export const startCommand = new Command('start')
   .description('Yeni proje başlat ve BMAD workflow\'unu çalıştır')
   .option('-a, --auto', 'Tüm adımları otomatik çalıştır (hızlı mod)')
   .option('-i, --interactive', 'İnteraktif mod (seçenekler, geri bildirim, iterasyonlar)')
+  .option('-f, --full', 'BMAD Full mod (tüm fazlar, tüm workflow\'lar, ~80+ alt adım)')
   .action(async (options) => {
     p.intro(MESSAGES.WELCOME);
 
@@ -471,6 +474,9 @@ export const startCommand = new Command('start')
     } else if (options.interactive) {
       // --interactive flag: interactive mode
       workflowMode = 'interactive';
+    } else if (options.full) {
+      // --full flag: BMAD full mode
+      workflowMode = 'bmad';
     } else {
       // Ask user for mode
       console.log('');
@@ -479,6 +485,11 @@ export const startCommand = new Command('start')
       const modeChoice = await p.select({
         message: 'Nasıl çalışmak istersiniz?',
         options: [
+          {
+            value: 'bmad',
+            label: MESSAGES.MODE_BMAD,
+            hint: 'Gerçek BMAD metodolojisi: 4 faz, 15+ workflow, 80+ alt adım',
+          },
           {
             value: 'interactive',
             label: MESSAGES.MODE_INTERACTIVE,
@@ -555,7 +566,25 @@ export const startCommand = new Command('start')
 
     console.log('');
     p.log.info(MESSAGES.WORKFLOW_START);
-    console.log(`📌 Mod: ${workflowMode === 'interactive' ? 'İnteraktif' : 'Hızlı'}`);
+    const modeLabel = workflowMode === 'bmad' ? 'BMAD Full' : workflowMode === 'interactive' ? 'İnteraktif' : 'Hızlı';
+    console.log(`📌 Mod: ${modeLabel}`);
+
+    // BMAD FULL MODE: Use the full BMAD orchestrator
+    if (workflowMode === 'bmad') {
+      const success = await runBmadWorkflow(
+        projectPath,
+        projectName,
+        idea.trim(),
+        adapter
+      );
+
+      if (success) {
+        p.outro(MESSAGES.WORKFLOW_COMPLETE);
+      } else {
+        p.log.warn('Workflow tamamlanamadı.');
+      }
+      return;
+    }
 
     const spinner = getSpinnerService();
     const completionScreen = getCompletionScreen();
@@ -564,7 +593,7 @@ export const startCommand = new Command('start')
     const startTime = Date.now();
     let totalIterations = 0;
 
-    // Execute workflow
+    // Execute workflow (interactive or quick mode)
     for (let i = 0; i < BMAD_STEPS.length; i++) {
       const stepId = BMAD_STEPS[i];
       const stepName = BMAD_STEP_NAMES[stepId];
