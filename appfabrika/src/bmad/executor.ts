@@ -11,7 +11,9 @@ import type {
   StepResult,
   ExecutionContext,
   MenuOption,
+  AgentPersona,
 } from './types.js';
+import { BMAD_AGENTS, getAgentsForPhase } from './types.js';
 
 /**
  * Stream AI response to console with clear formatting
@@ -296,9 +298,20 @@ export async function executeStep(
     );
     iterations++;
 
-    accumulatedContent = techniques.map((t, i) =>
+    const techniqueOutput = techniques.map((t, i) =>
       `## ${t}\n\n${outputs[i]}`
     ).join('\n\n---\n\n') + '\n\n---\n\n# SENTEZ\n\n' + synthesis;
+
+    // Run agent review
+    const agentReview = await runAgentReview(
+      techniqueOutput,
+      step.meta.name,
+      context,
+      adapter,
+      true
+    );
+
+    accumulatedContent = techniqueOutput + '\n\n---\n\n# 🎭 UZMAN DEĞERLENDİRMESİ\n\n' + agentReview;
   } else {
     // No multiple techniques, run standard sections
     const nonMenuSections = step.sections.filter(s => !s.isMenu);
@@ -334,6 +347,17 @@ export async function executeStep(
         iterations++;
       }
     }
+
+    // Run agent review for standard sections
+    const agentReview = await runAgentReview(
+      accumulatedContent,
+      step.meta.name,
+      context,
+      adapter,
+      true
+    );
+
+    accumulatedContent = accumulatedContent + '\n\n---\n\n# 🎭 UZMAN DEĞERLENDİRMESİ\n\n' + agentReview;
   }
 
   // Handle menu (A/P/C loop)
@@ -847,6 +871,111 @@ Kapsamlı ve aksiyon odaklı ol. Türkçe yanıt ver.`;
 }
 
 /**
+ * Run agent review - all relevant agents provide their perspective
+ */
+async function runAgentReview(
+  stepOutput: string,
+  stepName: string,
+  context: ExecutionContext,
+  adapter: AnthropicAdapter,
+  showOutput: boolean = true
+): Promise<string> {
+  const agents = getAgentsForPhase(context.phase);
+
+  if (showOutput) {
+    console.log('');
+    console.log('╔' + '═'.repeat(58) + '╗');
+    console.log('║ 🎭 AGENT DEĞERLENDİRMESİ'.padEnd(59) + '║');
+    console.log('║ ' + `${agents.length} uzman perspektifinden analiz`.padEnd(57) + '║');
+    console.log('╚' + '═'.repeat(58) + '╝');
+  }
+
+  const agentFeedbacks: { agent: AgentPersona; feedback: string }[] = [];
+
+  for (const agent of agents) {
+    if (showOutput) {
+      console.log('');
+      console.log(`${agent.emoji} ${agent.name} (${agent.title}) değerlendiriyor...`);
+      console.log('─'.repeat(60));
+    }
+
+    const systemPrompt = `Sen ${agent.name}, bir ${agent.title}'sın.
+Rol: ${agent.role}
+Uzmanlık alanların: ${agent.expertise.join(', ')}
+Perspektif: ${agent.perspective}
+İletişim tarzı: ${agent.communicationStyle}
+
+Bu perspektiften değerlendirme yap. Kendi uzmanlık alanına odaklan.
+Her zaman şu soruları düşün:
+${agent.criticalQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}
+
+Türkçe yanıt ver. Kısa ve öz ol (max 150 kelime).`;
+
+    const prompt = `Proje: "${context.idea}"
+Adım: ${stepName}
+Workflow: ${context.workflow.meta.name}
+
+Adım Çıktısı:
+${stepOutput.slice(0, 3000)}
+
+---
+
+${agent.name} olarak bu çıktıyı değerlendir:
+
+1. **Güçlü Yönler** (kendi uzmanlık alanından)
+2. **Endişeler/Riskler** (kritik sorularına göre)
+3. **Öneriler** (somut iyileştirmeler)
+
+Kısa ve öz ol. Sadece kendi perspektifinden konuş.`;
+
+    const feedback = await streamResponse(adapter, prompt, systemPrompt, showOutput);
+    agentFeedbacks.push({ agent, feedback });
+  }
+
+  // Synthesize all agent feedbacks
+  if (showOutput) {
+    console.log('');
+    console.log('════════════════════════════════════════════════════════════');
+    console.log('📊 UZMAN GÖRÜŞLERİ SENTEZİ');
+    console.log('════════════════════════════════════════════════════════════');
+  }
+
+  const synthesisPrompt = `Aşağıdaki ${agents.length} uzmanın görüşlerini sentezle:
+
+${agentFeedbacks.map(({ agent, feedback }) =>
+  `### ${agent.emoji} ${agent.name} (${agent.title})\n${feedback}`
+).join('\n\n---\n\n')}
+
+---
+
+## Sentez Raporu:
+
+### ✅ Konsensüs (Tüm uzmanların hemfikir olduğu noktalar)
+
+### ⚠️ Kritik Endişeler (Öncelikli ele alınması gerekenler)
+
+### 💡 Önerilen Aksiyonlar (Somut adımlar)
+
+### 🔄 Sonraki Adım İçin Notlar
+
+Kısa ve aksiyon odaklı ol. Türkçe yanıt ver.`;
+
+  const synthesis = await streamResponse(
+    adapter,
+    synthesisPrompt,
+    'Sen deneyimli bir proje yöneticisisin. Farklı uzman görüşlerini sentezleyip aksiyon planı oluştur.',
+    showOutput
+  );
+
+  // Combine all feedbacks
+  const fullReview = agentFeedbacks.map(({ agent, feedback }) =>
+    `## ${agent.emoji} ${agent.name} (${agent.title})\n\n${feedback}`
+  ).join('\n\n---\n\n') + '\n\n---\n\n# 📊 SENTEZ\n\n' + synthesis;
+
+  return fullReview;
+}
+
+/**
  * Execute step in auto mode with ALL techniques (no user interaction)
  */
 export async function executeStepAuto(
@@ -912,17 +1041,29 @@ export async function executeStepAuto(
       `## ${t}\n\n${outputs[i]}`
     ).join('\n\n---\n\n') + '\n\n---\n\n# SENTEZ\n\n' + synthesis;
 
+    // Run agent review on the output
+    const agentReview = await runAgentReview(
+      fullOutput,
+      step.meta.name,
+      context,
+      adapter,
+      showOutput
+    );
+
+    // Combine step output with agent review
+    const finalOutput = fullOutput + '\n\n---\n\n# 🎭 UZMAN DEĞERLENDİRMESİ\n\n' + agentReview;
+
     if (showOutput) {
       console.log('');
-      console.log(`✅ ${step.meta.name} tamamlandı (${techniques.length} teknik + sentez)`);
+      console.log(`✅ ${step.meta.name} tamamlandı (${techniques.length} teknik + sentez + ${getAgentsForPhase(context.phase).length} uzman değerlendirmesi)`);
     }
 
     return {
       success: true,
-      output: fullOutput,
+      output: finalOutput,
       userApproved: true,
       nextStep: step.meta.nextStepFile,
-      iterations: techniques.length + 1,
+      iterations: techniques.length + 1 + getAgentsForPhase(context.phase).length + 1,
     };
   }
 
@@ -953,16 +1094,28 @@ Bu adımı tamamla. Tüm gereksinimleri karşıla. Türkçe ve detaylı yanıt v
 
   const output = await streamResponse(adapter, prompt, systemPrompt, showOutput);
 
+  // Run agent review on the output
+  const agentReview = await runAgentReview(
+    output,
+    step.meta.name,
+    context,
+    adapter,
+    showOutput
+  );
+
+  // Combine step output with agent review
+  const finalOutput = output + '\n\n---\n\n# 🎭 UZMAN DEĞERLENDİRMESİ\n\n' + agentReview;
+
   if (showOutput) {
     console.log('');
-    console.log(`✅ ${step.meta.name} tamamlandı`);
+    console.log(`✅ ${step.meta.name} tamamlandı (1 adım + ${getAgentsForPhase(context.phase).length} uzman değerlendirmesi)`);
   }
 
   return {
     success: true,
-    output,
+    output: finalOutput,
     userApproved: true,
     nextStep: step.meta.nextStepFile,
-    iterations: 1,
+    iterations: 1 + getAgentsForPhase(context.phase).length + 1,
   };
 }
