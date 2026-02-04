@@ -19,6 +19,12 @@ import {
 } from './types.js';
 import { parseWorkflow, findBmadRoot } from './parser.js';
 import { executeStep, executeStepAuto, generateWorkflowSummary } from './executor.js';
+import {
+  runPartyMode,
+  generateDiagram,
+  documentProject,
+  type DiagramType,
+} from './features.js';
 
 /**
  * Workflow selection mode
@@ -207,6 +213,19 @@ export class BmadOrchestrator {
     console.log('└' + '─'.repeat(58) + '┘');
 
     try {
+      // Handle special workflows (Party Mode, Diagrams, Document Project)
+      if (workflow.id.startsWith('party-mode')) {
+        return await this.executePartyMode(workflow);
+      }
+
+      if (workflow.id.startsWith('create-') && workflow.path.includes('excalidraw')) {
+        return await this.executeDiagramWorkflow(workflow);
+      }
+
+      if (workflow.id === 'document-project') {
+        return await this.executeDocumentProject(workflow);
+      }
+
       const parsedWorkflow = await parseWorkflow(
         workflow.path,
         this.config.bmadRoot
@@ -323,6 +342,174 @@ export class BmadOrchestrator {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       p.log.error(`Workflow hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Party Mode workflow
+   */
+  private async executePartyMode(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      // Determine topic based on workflow phase
+      let topic = '';
+      if (workflow.id.includes('analysis')) {
+        topic = `${this.config.idea} - Analiz bulgularını değerlendirelim. Pazar fırsatları, riskler ve ürün stratejisi hakkında ne düşünüyorsunuz?`;
+      } else if (workflow.id.includes('planning')) {
+        topic = `${this.config.idea} - PRD ve UX planını inceleyelim. Gereksinimler yeterli mi? UX akışları mantıklı mı?`;
+      } else if (workflow.id.includes('solutioning')) {
+        topic = `${this.config.idea} - Mimari kararları ve epic/story planını değerlendirelim. Teknik yaklaşım doğru mu?`;
+      } else if (workflow.id.includes('retrospective')) {
+        topic = `${this.config.idea} - Uygulama sürecini değerlendirelim. Ne iyi gitti? Ne daha iyi olabilirdi?`;
+      } else {
+        topic = `${this.config.idea} - Genel değerlendirme`;
+      }
+
+      // Build minimal context for party mode
+      const previousContext = Array.from(this.workflowOutputs.entries())
+        .slice(-3)
+        .map(([id, content]) => `### ${id}\n${content.slice(0, 1000)}`)
+        .join('\n\n');
+
+      const result = await runPartyMode(
+        {
+          topic: topic + '\n\nÖnceki Çalışmalar:\n' + previousContext,
+          context: {
+            projectName: this.config.projectName,
+            projectPath: this.config.projectPath,
+            idea: this.config.idea,
+            phase: this.currentPhase,
+            workflow: { meta: { name: workflow.name, description: workflow.description, phase: this.currentPhase, order: 0, required: true }, steps: [], currentStepIndex: 0 },
+            state: { workflowId: workflow.id, currentStepIndex: 0, completedSteps: [], outputs: new Map(), startedAt: new Date(), lastUpdatedAt: new Date() },
+            previousOutputs: this.workflowOutputs,
+            userPreferences: new Map(),
+          },
+          rounds: 2,
+        },
+        this.config.adapter,
+        true
+      );
+
+      // Save output
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, result.discussion);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, result.discussion);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      console.log('📄 Çıktı kaydedildi: docs/' + workflow.id + '.md');
+
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Party Mode hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Diagram workflow
+   */
+  private async executeDiagramWorkflow(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      // Determine diagram type from workflow id
+      let diagramType: DiagramType = 'architecture';
+      if (workflow.id.includes('wireframe')) diagramType = 'wireframe';
+      else if (workflow.id.includes('flowchart')) diagramType = 'flowchart';
+      else if (workflow.id.includes('dataflow')) diagramType = 'dataflow';
+      else if (workflow.id.includes('erd')) diagramType = 'erd';
+
+      const context = {
+        projectName: this.config.projectName,
+        projectPath: this.config.projectPath,
+        idea: this.config.idea,
+        phase: this.currentPhase,
+        workflow: { meta: { name: workflow.name, description: workflow.description, phase: this.currentPhase, order: 0, required: true }, steps: [], currentStepIndex: 0 },
+        state: { workflowId: workflow.id, currentStepIndex: 0, completedSteps: [], outputs: new Map(), startedAt: new Date(), lastUpdatedAt: new Date() },
+        previousOutputs: this.workflowOutputs,
+        userPreferences: new Map(),
+      };
+
+      const result = await generateDiagram(
+        {
+          type: diagramType,
+          title: `${this.config.projectName} - ${workflow.name}`,
+          description: workflow.description,
+          context,
+        },
+        this.config.adapter,
+        true
+      );
+
+      // Save both JSON and markdown
+      const diagramsDir = join(this.config.projectPath, 'docs', 'diagrams');
+      await mkdir(diagramsDir, { recursive: true });
+
+      // Save Excalidraw JSON
+      const jsonPath = join(diagramsDir, `${workflow.id}.excalidraw`);
+      await writeFile(jsonPath, JSON.stringify(result.json, null, 2), 'utf-8');
+
+      // Save markdown description
+      const output = `# ${workflow.name}\n\n${result.markdown}\n\n---\n\n📊 Excalidraw dosyası: diagrams/${workflow.id}.excalidraw`;
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      console.log('📄 Çıktı kaydedildi: docs/' + workflow.id + '.md');
+      console.log('📊 Diyagram kaydedildi: docs/diagrams/' + workflow.id + '.excalidraw');
+
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Diyagram hatası: ${errorMessage}`);
+      return false;
+    }
+  }
+
+  /**
+   * Execute Document Project workflow
+   */
+  private async executeDocumentProject(workflow: WorkflowDefinition): Promise<boolean> {
+    try {
+      const analysis = await documentProject(
+        this.config.projectPath,
+        this.config.adapter,
+        true
+      );
+
+      const output = `# Proje Dokümantasyonu
+
+## Genel Bakış
+${analysis.overview}
+
+## Mimari
+${analysis.architecture}
+
+## Teknolojiler
+${analysis.technologies.map(t => `- ${t}`).join('\n')}
+
+## Kod Pattern'leri
+${analysis.patterns.map(p => `- ${p}`).join('\n')}
+
+## Dizin Yapısı
+${analysis.structure}
+
+## İyileştirme Önerileri
+${analysis.recommendations.map(r => `- ${r}`).join('\n')}
+`;
+
+      this.completedWorkflows.add(workflow.id);
+      this.workflowOutputs.set(workflow.id, output);
+      await this.saveWorkflowOutput(workflow.id, workflow.name, output);
+
+      p.log.success(`✅ ${workflow.name} tamamlandı!`);
+      console.log('📄 Çıktı kaydedildi: docs/' + workflow.id + '.md');
+
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      p.log.error(`Dokümantasyon hatası: ${errorMessage}`);
       return false;
     }
   }

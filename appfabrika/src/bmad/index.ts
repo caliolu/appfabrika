@@ -7,3 +7,4 @@ export * from './types.js';
 export * from './parser.js';
 export * from './executor.js';
 export * from './orchestrator.js';
+export * from './features.js';
