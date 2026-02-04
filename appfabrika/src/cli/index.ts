@@ -24,6 +24,7 @@ import {
   type RealWorkflowDef,
 } from '../bmad/real-workflow-loader.js';
 import { executeRealWorkflow } from '../bmad/real-step-executor.js';
+import { executeMultiAgentBmad } from '../bmad/multi-agent-executor.js';
 import { dirname } from 'node:path';
 
 const program = new Command();
@@ -216,6 +217,127 @@ program
     // Execute workflow
     p.intro(`🏭 ${workflow.name}`);
     const result = await executeRealWorkflow(adapter, workflow, discovery.config, projectRoot);
+
+    if (result.success) {
+      p.outro(`✅ Workflow tamamlandı${result.outputPath ? `: ${result.outputPath}` : ''}`);
+      process.exit(0);
+    } else {
+      p.outro('❌ Workflow başarısız');
+      process.exit(1);
+    }
+  });
+
+// Multi-Agent BMAD command - full automated BMAD with AI-to-AI conversation
+program
+  .command('bmad-auto [workflow]')
+  .description('Multi-agent BMAD - Facilitator + User Agent otomatik konuşma')
+  .option('-p, --path <path>', 'Proje dizini', process.cwd())
+  .option('-i, --idea <idea>', 'Proje fikri')
+  .option('-l, --list', 'Workflow\'ları listele')
+  .action(async (workflowId: string | undefined, options) => {
+    // Find BMAD root
+    const bmadRoot = await findBmadRootReal(options.path);
+    if (!bmadRoot) {
+      p.log.error('_bmad klasörü bulunamadı. BMAD kurulu mu?');
+      process.exit(1);
+    }
+
+    const projectRoot = dirname(bmadRoot);
+
+    // Discover workflows
+    const discovery = await discoverWorkflows(bmadRoot);
+
+    // List mode
+    if (options.list && !workflowId) {
+      console.log('');
+      console.log('╔══════════════════════════════════════════════════════════════╗');
+      console.log('║         📋 BMAD WORKFLOW\'LAR (Multi-Agent)                   ║');
+      console.log('╠══════════════════════════════════════════════════════════════╣');
+
+      for (const [phase, workflows] of discovery.phases.entries()) {
+        console.log(`║ ${phase.toUpperCase()}`.padEnd(63) + '║');
+        for (const wf of workflows) {
+          console.log(`║   ${wf.name.padEnd(55)} ║`);
+        }
+      }
+
+      console.log('╟──────────────────────────────────────────────────────────────╢');
+      console.log(`║ Toplam: ${discovery.workflows.length} workflow`.padEnd(63) + '║');
+      console.log('╚══════════════════════════════════════════════════════════════╝');
+      process.exit(0);
+    }
+
+    // Get project idea
+    let projectIdea = options.idea;
+    if (!projectIdea) {
+      const ideaInput = await p.text({
+        message: 'Proje fikrinizi açıklayın:',
+        placeholder: 'örn: Restoran rezervasyon ve sipariş yönetim sistemi',
+        validate: (value) => {
+          if (!value || value.trim().length < 10) {
+            return 'Lütfen projenizi en az bir cümleyle açıklayın';
+          }
+        },
+      });
+
+      if (p.isCancel(ideaInput)) {
+        process.exit(0);
+      }
+
+      projectIdea = ideaInput as string;
+    }
+
+    // Select workflow if not provided
+    if (!workflowId) {
+      const choices = discovery.workflows.map(wf => ({
+        value: wf.name,
+        label: `${wf.name} (${wf.phase})`,
+        hint: wf.description?.slice(0, 40),
+      }));
+
+      const selected = await p.select({
+        message: 'Hangi workflow\'u çalıştırmak istersin?',
+        options: choices,
+      });
+
+      if (p.isCancel(selected)) {
+        process.exit(0);
+      }
+
+      workflowId = selected as string;
+    }
+
+    // Find workflow
+    const workflow = discovery.workflows.find(
+      wf => wf.name === workflowId || wf.name.includes(workflowId!)
+    );
+
+    if (!workflow) {
+      p.log.error(`Workflow bulunamadı: ${workflowId}`);
+      process.exit(1);
+    }
+
+    // Check API key
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      p.log.error('ANTHROPIC_API_KEY çevre değişkeni bulunamadı.');
+      process.exit(1);
+    }
+
+    const adapter = new AnthropicAdapter({ apiKey });
+
+    // Execute multi-agent workflow
+    console.log('');
+    p.intro(`🤖 Multi-Agent BMAD: ${workflow.name}`);
+    console.log(`   Proje: ${projectIdea.slice(0, 60)}...`);
+
+    const result = await executeMultiAgentBmad(
+      adapter,
+      workflow,
+      discovery.config,
+      projectRoot,
+      projectIdea
+    );
 
     if (result.success) {
       p.outro(`✅ Workflow tamamlandı${result.outputPath ? `: ${result.outputPath}` : ''}`);

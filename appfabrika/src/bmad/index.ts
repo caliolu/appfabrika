@@ -36,3 +36,4 @@ export * from './real-workflow-loader.js';
 export * from './document-manager.js';
 export * from './input-discovery.js';
 export * from './real-step-executor.js';
+export * from './multi-agent-executor.js';
