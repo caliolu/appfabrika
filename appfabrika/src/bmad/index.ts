@@ -7,6 +7,10 @@
  * - YOLO mode
  * - Dynamic agent loading
  * - Quality gates and auto-fix
+ * - Config loading from yaml
+ * - Structured logging
+ * - Token tracking and cost estimation
+ * - Response caching
  */
 
 export * from './types.js';
@@ -18,3 +22,7 @@ export * from './advanced-features.js';
 export * from './workflow-engine.js';
 export * from './template-engine.js';
 export * from './agent-loader.js';
+export * from './config-loader.js';
+export * from './logger.js';
+export * from './token-tracker.js';
+export * from './cache.js';

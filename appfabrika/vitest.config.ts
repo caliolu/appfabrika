@@ -5,7 +5,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['./tests/setup.ts'],
-    include: ['tests/**/*.{test,spec}.ts'],
+    include: ['tests/**/*.{test,spec}.ts', 'src/**/__tests__/*.{test,spec}.ts'],
     sequence: {
       concurrent: false,
     },

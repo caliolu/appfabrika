@@ -1,6 +1,7 @@
 /**
  * BMAD Phase Orchestrator
  * Manages execution of all BMAD phases and workflows
+ * Integrated with logging, token tracking, and caching
  */
 
 import * as p from '@clack/prompts';
@@ -48,6 +49,10 @@ import {
   improveUntilPass,
   type QualityGateResult,
 } from './workflow-engine.js';
+import { logger } from './logger.js';
+import { tokenTracker } from './token-tracker.js';
+import { cache } from './cache.js';
+import { loadBmadConfig, getConfig } from './config-loader.js';
 
 /**
  * Workflow selection mode
@@ -89,6 +94,28 @@ export class BmadOrchestrator {
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
+    // Initialize logging context
+    logger.info('BMAD Orchestrator başlatıldı', {
+      projectName: config.projectName,
+      mode: config.mode,
+    });
+  }
+
+  /**
+   * Initialize utilities (config, cache, etc.)
+   */
+  async init(): Promise<void> {
+    // Load BMAD config
+    await loadBmadConfig(this.config.bmadRoot);
+    const bmadConfig = getConfig();
+    logger.info('BMAD config yüklendi', {
+      userName: bmadConfig.user_name,
+      language: bmadConfig.communication_language,
+    });
+
+    // Initialize cache
+    await cache.init();
+    logger.debug('Cache başlatıldı');
   }
 
   /**
@@ -1925,6 +1952,14 @@ generatedAt: ${new Date().toISOString()}
     completedWorkflows: string[];
     totalSteps: number;
   }> {
+    // Initialize utilities
+    await this.init();
+
+    logger.info('BMAD Full Workflow başlatılıyor', {
+      projectName: this.config.projectName,
+      idea: this.config.idea.slice(0, 100),
+    });
+
     console.log('');
     console.log('🏭 BMAD Full Workflow başlatılıyor...');
     console.log(`📁 Proje: ${this.config.projectName}`);
@@ -2050,11 +2085,31 @@ generatedAt: ${new Date().toISOString()}
 
     console.log('╚══════════════════════════════════════════════════════════════╝');
 
+    // Display token usage summary
+    tokenTracker.displaySummary();
+
     // Save final summary report
     await this.saveFinalReport(selectedWorkflows, totalSteps);
 
+    // Save token stats
+    await tokenTracker.save();
+
+    // Flush logs
+    await logger.flush();
+
+    // Close cache
+    await cache.close();
+
+    const success = this.completedWorkflows.size === selectedWorkflows.length;
+    logger.info('BMAD workflow tamamlandı', {
+      success,
+      completedWorkflows: this.completedWorkflows.size,
+      totalSteps,
+      tokenStats: tokenTracker.getStats(),
+    });
+
     return {
-      success: this.completedWorkflows.size === selectedWorkflows.length,
+      success,
       completedWorkflows: Array.from(this.completedWorkflows),
       totalSteps,
     };

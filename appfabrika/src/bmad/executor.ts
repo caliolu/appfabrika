@@ -2,6 +2,7 @@
  * BMAD Step Executor
  * Executes workflow steps interactively with AI + user interaction
  * Now with A/P/C/Y menu system, Advanced Elicitation (50+ methods), and YOLO mode
+ * Integrated with logging, token tracking, and caching
  */
 
 import * as p from '@clack/prompts';
@@ -23,19 +24,44 @@ import {
   shouldAutoContinue,
   type YoloState,
 } from './template-engine.js';
+import { logger } from './logger.js';
+import { tokenTracker } from './token-tracker.js';
+import { cache, generateCacheKey } from './cache.js';
 
 // Global YOLO state for the current workflow
 let currentYoloState: YoloState = createYoloState();
 
 /**
  * Stream AI response to console with clear formatting
+ * Includes token tracking, logging, and optional caching
  */
 async function streamResponse(
   adapter: AnthropicAdapter,
   prompt: string,
   systemPrompt: string,
-  showOutput: boolean = true
+  showOutput: boolean = true,
+  useCache: boolean = false,
+  cacheKey?: string
 ): Promise<string> {
+  // Check cache first if enabled
+  if (useCache && cacheKey) {
+    const cached = await cache.get<string>(cacheKey);
+    if (cached) {
+      logger.debug('Cache hit', { cacheKey });
+      if (showOutput) {
+        console.log('');
+        console.log('┌' + '─'.repeat(58) + '┐');
+        console.log('│ 🤖 AI Yanıtı (cached):'.padEnd(59) + '│');
+        console.log('└' + '─'.repeat(58) + '┘');
+        console.log('');
+        console.log(cached);
+        console.log('');
+        console.log('─'.repeat(60));
+      }
+      return cached;
+    }
+  }
+
   let fullContent = '';
 
   if (showOutput) {
@@ -45,6 +71,9 @@ async function streamResponse(
     console.log('└' + '─'.repeat(58) + '┘');
     console.log('');
   }
+
+  logger.debug('AI request started', { promptLength: prompt.length });
+  const startTime = Date.now();
 
   const stream = adapter.stream(prompt, {
     maxTokens: 4096,
@@ -58,10 +87,31 @@ async function streamResponse(
     fullContent += chunk;
   }
 
+  const duration = Date.now() - startTime;
+
   if (showOutput) {
     console.log('');
     console.log('');
     console.log('─'.repeat(60));
+  }
+
+  // Estimate token counts (rough approximation: ~4 chars per token)
+  const inputTokens = Math.ceil((prompt.length + systemPrompt.length) / 4);
+  const outputTokens = Math.ceil(fullContent.length / 4);
+
+  // Track tokens
+  tokenTracker.track(inputTokens, outputTokens);
+  logger.debug('AI request completed', {
+    duration,
+    inputTokens,
+    outputTokens,
+    responseLength: fullContent.length,
+  });
+
+  // Cache the response if caching is enabled
+  if (useCache && cacheKey) {
+    await cache.set(cacheKey, fullContent, 3600); // 1 hour TTL
+    logger.debug('Response cached', { cacheKey });
   }
 
   return fullContent;
@@ -218,6 +268,11 @@ export async function executeStep(
   context: ExecutionContext,
   adapter: AnthropicAdapter
 ): Promise<StepResult> {
+  // Set logging context
+  logger.setWorkflowContext(context.workflow.meta.id, step.meta.name);
+  tokenTracker.setContext(context.workflow.meta.id, step.meta.name);
+  logger.info(`Step başlatıldı: ${step.meta.name}`);
+
   console.log('');
   console.log('═'.repeat(60));
   console.log(`📌 ${step.meta.name.toUpperCase()}`);
@@ -364,6 +419,7 @@ export async function executeStep(
   }
 
   p.log.success(`✅ ${step.meta.name} tamamlandı! (${iterations} iterasyon)`);
+  logger.info(`Step tamamlandı: ${step.meta.name}`, { iterations, success: true });
 
   return {
     success: true,
@@ -959,6 +1015,11 @@ export async function executeStepAuto(
   adapter: AnthropicAdapter,
   showOutput: boolean = true
 ): Promise<StepResult> {
+  // Set logging and tracking context
+  logger.setWorkflowContext(context.workflow.meta.id, step.meta.name);
+  tokenTracker.setContext(context.workflow.meta.id, step.meta.name);
+  logger.info(`Step (auto) başlatıldı: ${step.meta.name}`);
+
   if (showOutput) {
     console.log('');
     console.log('╔' + '═'.repeat(58) + '╗');

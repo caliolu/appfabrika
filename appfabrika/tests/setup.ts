@@ -1,16 +1,6 @@
-// Vitest Test Setup
-// This file runs before each test file
+/**
+ * Vitest setup file
+ */
 
-import { beforeAll, afterAll, afterEach } from 'vitest';
+// Global test setup can go here
 
-beforeAll(() => {
-  // Global test setup
-});
-
-afterEach(() => {
-  // Cleanup after each test
-});
-
-afterAll(() => {
-  // Global teardown
-});
