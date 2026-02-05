@@ -37,3 +37,4 @@ export * from './document-manager.js';
 export * from './input-discovery.js';
 export * from './real-step-executor.js';
 export * from './multi-agent-executor.js';
+export * from './agent-persona-loader.js';

@@ -25,6 +25,7 @@ import { documentManager } from './document-manager.js';
 import { createInputDiscovery, type DiscoveryResult } from './input-discovery.js';
 import { logger } from './logger.js';
 import { tokenTracker } from './token-tracker.js';
+import { loadAgentForWorkflow, type AgentPersona } from './agent-persona-loader.js';
 
 /**
  * BMAD XML Tag types
@@ -354,38 +355,58 @@ function isXmlWorkflow(content: string): boolean {
 }
 
 /**
- * Facilitator Agent - follows BMAD instructions
+ * Facilitator Agent - follows BMAD instructions with real agent persona
  */
 class FacilitatorAgent {
   private adapter: AnthropicAdapter;
   private config: BmadRealConfig;
   private workflow: RealWorkflowDef;
+  private persona: AgentPersona;
 
-  constructor(adapter: AnthropicAdapter, config: BmadRealConfig, workflow: RealWorkflowDef) {
+  constructor(
+    adapter: AnthropicAdapter,
+    config: BmadRealConfig,
+    workflow: RealWorkflowDef,
+    persona: AgentPersona
+  ) {
     this.adapter = adapter;
     this.config = config;
     this.workflow = workflow;
+    this.persona = persona;
   }
 
   /**
-   * Get system prompt for facilitator
+   * Get agent display name
+   */
+  getDisplayName(): string {
+    return `${this.persona.icon} ${this.persona.name} (${this.persona.title})`;
+  }
+
+  /**
+   * Get system prompt using actual agent persona
    */
   private getSystemPrompt(): string {
-    return `Sen deneyimli bir BMAD Facilitator'sın.
-Adın: ${this.config.user_name || 'Facilitator'}
-Dil: ${this.config.communication_language}
+    return `Sen ${this.persona.name}, ${this.persona.title}.
+${this.persona.icon} ${this.persona.role}
 
-ROLÜN:
-- Kolaylaştırıcı (facilitator) - içerik üretici DEĞİL
+KİMLİĞİN:
+${this.persona.identity}
+
+İLETİŞİM TARZI:
+${this.persona.communicationStyle}
+
+PRENSİPLERİN:
+${this.persona.principles}
+
+BMAD KURALLARI:
+- Kolaylaştırıcı (facilitator) olarak çalış
 - BMAD step talimatlarını TAKİP ET
 - Sorular sor, keşif yap
 - Kullanıcıyla işbirliği içinde çalış
-
-KURALLAR:
 - Talimatları HARFI HARFINE takip et
-- Soru sor, yanıt bekle
-- İçerik üretme - sadece soruları sun
-- ${this.config.communication_language} dilinde konuş`;
+- ${this.config.communication_language} dilinde konuş
+
+Kullanıcının adı: ${this.config.user_name}`;
   }
 
   /**
@@ -603,10 +624,11 @@ ${this.config.communication_language} dilinde yanıt ver.`;
  * Multi-Agent BMAD Executor
  */
 export class MultiAgentBmadExecutor {
-  private facilitator: FacilitatorAgent;
+  private facilitator!: FacilitatorAgent;
   private userAgent: UserAgent;
   private state: MultiAgentState;
   private adapter: AnthropicAdapter;
+  private agentPersona!: AgentPersona;
 
   constructor(
     adapter: AnthropicAdapter,
@@ -617,7 +639,6 @@ export class MultiAgentBmadExecutor {
     projectContext: string = ''
   ) {
     this.adapter = adapter;
-    this.facilitator = new FacilitatorAgent(adapter, config, workflow);
     this.userAgent = new UserAgent(adapter, projectIdea, projectContext, config);
 
     this.state = {
@@ -641,6 +662,24 @@ export class MultiAgentBmadExecutor {
       workflow: this.state.workflow.name,
       projectIdea: this.state.projectIdea.slice(0, 50),
     });
+
+    // Load agent persona for this workflow
+    this.agentPersona = await loadAgentForWorkflow(
+      this.state.workflow.name,
+      this.state.projectRoot
+    );
+    logger.info('Agent persona loaded', {
+      agent: this.agentPersona.name,
+      title: this.agentPersona.title,
+    });
+
+    // Create facilitator with loaded persona
+    this.facilitator = new FacilitatorAgent(
+      this.adapter,
+      this.state.config,
+      this.state.workflow,
+      this.agentPersona
+    );
 
     // Find step files
     this.state.stepFiles = await findWorkflowSteps(this.state.workflow);
@@ -727,7 +766,8 @@ export class MultiAgentBmadExecutor {
         entry = `\n### 📌 ${content}\n\n`;
         break;
       case 'facilitator':
-        entry = `**[${timestamp}] 🎭 Facilitator:**\n\n${content}\n\n---\n\n`;
+        const agentLabel = this.agentPersona ? `${this.agentPersona.icon} ${this.agentPersona.name}` : '🎭 Facilitator';
+        entry = `**[${timestamp}] ${agentLabel}:**\n\n${content}\n\n---\n\n`;
         break;
       case 'user':
         entry = `**[${timestamp}] 👤 User Agent:**\n\n${content}\n\n---\n\n`;
@@ -763,10 +803,11 @@ export class MultiAgentBmadExecutor {
     console.log('╔══════════════════════════════════════════════════════════════╗');
     console.log(`║ 🤖 MULTI-AGENT BMAD: ${this.state.workflow.name}`.padEnd(63) + '║');
     console.log('╠══════════════════════════════════════════════════════════════╣');
-    console.log('║ Facilitator Agent ←→ User Agent                             ║');
+    console.log(`║ ${this.facilitator.getDisplayName()} ←→ User Agent`.padEnd(63) + '║');
     console.log('╚══════════════════════════════════════════════════════════════╝');
 
     await this.writeTranscript('header', `MULTI-AGENT BMAD: ${this.state.workflow.name}`);
+    await this.writeTranscript('system', `Agent: ${this.facilitator.getDisplayName()}`);
 
     // Execute each step
     while (this.state.currentStepIndex < this.state.stepFiles.length) {
@@ -921,7 +962,7 @@ ${this.state.outputPath ? `- Document: ${this.state.outputPath}` : '- No documen
       case 'conversation': {
         // Facilitator asks questions
         console.log('');
-        console.log('   🎭 Facilitator:');
+        console.log(`   ${this.agentPersona.icon} ${this.agentPersona.name}:`);
         const facilitatorMessage = await this.facilitator.presentQuestions(
           instruction,
           conversationContext
@@ -949,7 +990,7 @@ ${this.state.outputPath ? `- Document: ${this.state.outputPath}` : '- No documen
         );
         if (synthesis.trim()) {
           console.log('');
-          console.log('   🎭 Facilitator (özet):');
+          console.log(`   ${this.agentPersona.icon} ${this.agentPersona.name} (özet):`);
           console.log(this.indent(synthesis));
           this.addToConversation('facilitator', synthesis);
           await this.writeTranscript('facilitator', `(Özet) ${synthesis}`);
@@ -1131,7 +1172,7 @@ ${this.state.outputPath ? `- Document: ${this.state.outputPath}` : '- No documen
       case 'ask': {
         // Present question to user agent
         console.log('');
-        console.log('   🎭 Facilitator (soru):');
+        console.log(`   ${this.agentPersona.icon} ${this.agentPersona.name} (soru):`);
         console.log(this.indent(tag.content));
         this.addToConversation('facilitator', tag.content);
         await this.writeTranscript('facilitator', `(Soru) ${tag.content}`);
